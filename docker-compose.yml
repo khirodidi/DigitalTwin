@@ -1,0 +1,97 @@
+# =============================================================================
+# docker-compose.yml
+# Full Digital Twin deployment:
+#   postgres   — persistent storage
+#   mosquitto  — MQTT broker (WSN gateway connects here)
+#   backend    — FastAPI engine + AI inference + training scheduler
+#   frontend   — React dashboard (Nginx)
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: dt_postgres
+    environment:
+      POSTGRES_DB:       digital_twin
+      POSTGRES_USER:     dt_user
+      POSTGRES_PASSWORD: dt_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dt_user -d digital_twin"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Mosquitto MQTT broker ──────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: dt_mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"    # WebSocket for MQTT (optional)
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    restart: unless-stopped
+
+  # ── Backend — FastAPI + Digital Twin Engine + AI ────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dt_backend
+    environment:
+      POSTGRES_DSN:    postgresql://dt_user:dt_pass@postgres:5432/digital_twin
+      MQTT_HOST:       mosquitto
+      MQTT_PORT:       "1883"
+      HEARTBEAT_INTERVAL:  "5"
+      DEGRADED_THRESHOLD:  "2"
+      OFFLINE_THRESHOLD:   "5"
+      TEMP_CRITICAL:       "60.0"
+      TEMP_WARNING:        "50.0"
+      HUMIDITY_CRITICAL:   "85.0"
+      HUMIDITY_WARNING:    "70.0"
+      ANOMALY_THRESHOLD:   "0.75"
+      FAILURE_THRESHOLD:   "0.70"
+    volumes:
+      - model_store:/app/models    # persist trained AI models
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Frontend — React + Nginx ───────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: dt_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_logs:
+  model_store:
