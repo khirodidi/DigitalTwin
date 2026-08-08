@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dt_postgres
+    environment:
+      POSTGRES_DB:       digital_twin
+      POSTGRES_USER:     dt_user
+      POSTGRES_PASSWORD: dt_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U dt_user -d digital_twin"]
+      interval: 5s 
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: dt_mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dt_backend
+    environment:
+      POSTGRES_DSN:       postgresql://dt_user:dt_pass@postgres:5432/digital_twin
+      MQTT_HOST:          mosquitto
+      MQTT_PORT:          "1883"
+      HEARTBEAT_INTERVAL: "5"
+      DEGRADED_THRESHOLD: "2"
+      OFFLINE_THRESHOLD:  "5"
+      TEMP_CRITICAL:      "60.0"
+      TEMP_WARNING:       "50.0"
+      HUMIDITY_CRITICAL:  "85.0"
+      HUMIDITY_WARNING:   "70.0"
+    volumes:
+      - model_store:/app/models
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        REACT_APP_FACTORY_IMAGE:  factory_blueprint.png
+        REACT_APP_GRID_COLS:      "12"
+        REACT_APP_GRID_ROWS:      "5"
+        REACT_APP_SENSOR_COUNT:   "60"
+        REACT_APP_FACTORY_NAME:   "Factory A"
+        REACT_APP_API_URL:        http://localhost:8000
+        REACT_APP_WS_URL:         ws://localhost:8000/ws
+    container_name: dt_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: dt_simulator
+    command: >
+      python scripts/simulate_wsn.py
+      --host mosquitto --port 1883
+      --cols 6 --rows 5 --interval 2
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+    profiles:
+      - sim
+
+volumes:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_logs:
+  model_store:

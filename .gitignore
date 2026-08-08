@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+models/*.pt
+models/*.joblib
+models/*.onnx
+mlruns/
+data/
+*.log
+.DS_Store
+node_modules/
