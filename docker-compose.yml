@@ -2,6 +2,7 @@ version: "3.9"
 
 services:
 
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: dt_postgres
@@ -10,10 +11,8 @@ services:
       POSTGRES_USER:     dt_user
       POSTGRES_PASSWORD: dt_pass
     volumes:
-      # ── CHANGE: bind-mount to local directory so data survives `docker compose down -v`
-      # The ./data/postgres folder is created automatically on first start.
-      # Back it up with: cp -r ./data/postgres ./data/postgres_backup
-      - ./data/postgres:/var/lib/postgresql/data
+      # Named volume — managed by Docker (bind mount rolled back)
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -23,6 +22,7 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── MQTT broker ─────────────────────────────────────────────────────────────
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: dt_mosquitto
@@ -35,6 +35,7 @@ services:
       - mosquitto_logs:/mosquitto/log
     restart: unless-stopped
 
+  # ── Backend: FastAPI + Digital Twin Engine + AI ─────────────────────────────
   backend:
     build:
       context: .
@@ -62,17 +63,19 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ── Frontend: React build served by Nginx ───────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        REACT_APP_GRID_COLS:    "6"
-        REACT_APP_GRID_ROWS:    "5"
-        REACT_APP_SENSOR_COUNT: "30"
-        REACT_APP_FACTORY_NAME: "Factory A"
-        REACT_APP_API_URL:      "http://localhost:8000"
-        REACT_APP_WS_URL:       "ws://localhost:8000/ws"
+        REACT_APP_FACTORY_IMAGE: ""
+        REACT_APP_GRID_COLS:     "6"
+        REACT_APP_GRID_ROWS:     "5"
+        REACT_APP_SENSOR_COUNT:  "30"
+        REACT_APP_FACTORY_NAME:  "Factory A"
+        REACT_APP_API_URL:       "http://localhost:8000"
+        REACT_APP_WS_URL:        "ws://localhost:8000/ws"
     container_name: dt_frontend
     ports:
       - "3000:80"
@@ -80,6 +83,7 @@ services:
       - backend
     restart: unless-stopped
 
+  # ── WSN simulator (optional: docker compose --profile sim up) ───────────────
   simulator:
     build:
       context: .
@@ -87,17 +91,20 @@ services:
     container_name: dt_simulator
     command: >
       python scripts/simulate_wsn.py
+      --api http://backend:8000
       --host mosquitto --port 1883
-      --cols 6 --rows 5 --interval 2
-      --workers 5 --forklifts 2 --pallets 2
+      --interval 2
+      --violation-rate 0.03
+      --fire-delay 300
     depends_on:
       - mosquitto
+      - backend
     restart: unless-stopped
     profiles:
       - sim
 
 volumes:
+  postgres_data:
   mosquitto_data:
   mosquitto_logs:
   model_store:
-  # postgres_data is now a bind mount — no named volume needed

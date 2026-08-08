@@ -8,7 +8,7 @@ import uvicorn
 
 from engine.engine        import DigitalTwinEngine
 from api.ws_manager       import WebSocketManager
-from api.routes           import assets, sensors, zones, events, system
+from api.routes           import assets, sensors, zones, events, system, config
 from ai.training.trainer  import AITrainer
 
 logging.basicConfig(level=logging.INFO,
@@ -43,6 +43,7 @@ app.include_router(sensors.router, prefix="/api/sensors", tags=["Sensors"])
 app.include_router(zones.router,   prefix="/api/zones",   tags=["Zones"])
 app.include_router(events.router,  prefix="/api/events",  tags=["Events"])
 app.include_router(system.router,  prefix="/api/system",  tags=["System"])
+app.include_router(config.router,  prefix="/api/config",  tags=["Config"])
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):

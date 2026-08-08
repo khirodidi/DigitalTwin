@@ -51,11 +51,36 @@ CREATE TABLE IF NOT EXISTS system_snapshots (
 CREATE INDEX IF NOT EXISTS idx_env_readings_sensor_ts  ON env_readings    (sensor_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_location_events_asset_ts ON location_events (asset_id,  timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_events_level_ts          ON events          (level,      timestamp DESC);
+
+-- ── Configuration tables (used by the Configuration page) ────────────────────
+CREATE TABLE IF NOT EXISTS factory_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sensor_config (
+    sensor_id     TEXT PRIMARY KEY REFERENCES sensors(sensor_id) ON DELETE CASCADE,
+    coverage_type TEXT    NOT NULL DEFAULT 'passage',
+    passable      BOOLEAN NOT NULL DEFAULT TRUE,
+    description   TEXT             DEFAULT ''
+);
+
+"""
+
+DEFAULT_CONFIG_SQL = """
+INSERT INTO factory_config (key, value) VALUES
+  ('factory_name',  'Factory A'),
+  ('blueprint_url', ''),
+  ('grid_cols',     '6'),
+  ('grid_rows',     '5')
+ON CONFLICT (key) DO NOTHING;
 """
 
 def create_schema(dsn: str = None):
     conn = get_conn(dsn)
-    with conn.cursor() as cur: cur.execute(CREATE_TABLES)
+    with conn.cursor() as cur:
+        cur.execute(CREATE_TABLES)
+        cur.execute(DEFAULT_CONFIG_SQL)
     conn.commit()
     logger.info("Schema ready.")
 
