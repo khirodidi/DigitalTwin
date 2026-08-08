@@ -1,0 +1,24 @@
+# =============================================================================
+# api/main.py  — ADD ONE LINE to register the config router
+#
+# Find the section where other routers are registered and add the config one.
+# Everything else in main.py stays exactly the same.
+# =============================================================================
+
+# ── ADD this import at the top of api/main.py ─────────────────────────────────
+# from api.routes import assets, sensors, zones, events, system, config  ← add 'config'
+
+# ── ADD this line after the other app.include_router() calls ──────────────────
+# app.include_router(config.router, prefix="/api/config", tags=["Config"])
+
+# ── The complete router registration block should look like this: ─────────────
+#
+#   app.include_router(assets.router,  prefix="/api/assets",  tags=["Assets"])
+#   app.include_router(sensors.router, prefix="/api/sensors", tags=["Sensors"])
+#   app.include_router(zones.router,   prefix="/api/zones",   tags=["Zones"])
+#   app.include_router(events.router,  prefix="/api/events",  tags=["Events"])
+#   app.include_router(system.router,  prefix="/api/system",  tags=["System"])
+#   app.include_router(config.router,  prefix="/api/config",  tags=["Config"])   ← NEW
+#
+# That's the only change needed in main.py.
+# =============================================================================
