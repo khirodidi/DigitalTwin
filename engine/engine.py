@@ -10,6 +10,7 @@ from engine.state_store  import StateStore
 from engine.rules        import check_access, evaluate_scenarios, predict_critical_states
 from engine.watchdog     import SensorWatchdog
 from engine.system_state import compute_system_state
+from engine.thresholds    import resolver as threshold_resolver
 from ingestion.mqtt_parser import route_message
 from persistence.postgres  import (
     load_zone_registry, load_authorisations,
@@ -55,6 +56,9 @@ class DigitalTwinEngine:
                 self._store.set_asset_meta(aid, meta["name"], meta["asset_type"])
         except Exception as e:
             logger.warning(f"Could not load asset names: {e}")
+        # Resolve per-sensor thresholds (sensor → zone → global)
+        threshold_resolver.reload()
+
         self._known_sensors = set(registry.all_sensors())
         try:
             self._known_assets = set(load_asset_meta().keys())
@@ -163,11 +167,13 @@ class DigitalTwinEngine:
             except Exception as e:
                 logger.debug(f"Fire inference: {e}")
 
+        th = threshold_resolver.get(sid, sensor.zone_id)
         await self._ws.push_sensor_update({
             "sensor_id":sid,"zone_id":sensor.zone_id,
             "temperature":sensor.temperature,"humidity":sensor.humidity,
             "smoke":sensor.smoke,"env_status":sensor.env_status,
             "last_time_change":sensor.last_time_change.isoformat(),
+            "thresholds": th.to_dict(),
         })
 
         # Push health too — otherwise a sensor that was never seeded stays
@@ -318,6 +324,26 @@ class DigitalTwinEngine:
         except Exception as e:
             logger.info(f"Fire detector unavailable: {e}")
             self._fire_model = None
+
+    def reload_thresholds(self):
+        """Re-resolve every sensor's thresholds after a configuration change."""
+        threshold_resolver.reload()
+        logger.info("Thresholds reloaded.")
+
+    def reload_authorisations(self):
+        """
+        Re-read asset authorisations from the database.
+
+        A zone authorisation implicitly covers every sensor in that zone, so
+        changing a zone's sensor membership also changes who may stand where.
+        """
+        try:
+            from persistence.postgres import load_authorisations
+            for aid, (sensors, zones) in load_authorisations().items():
+                self._store.set_asset_authorisations(aid, sensors, zones)
+            logger.info("Authorisations reloaded.")
+        except Exception as e:
+            logger.warning(f"Authorisation reload failed: {e}")
 
     def reload_ai_models(self):
         from pathlib import Path

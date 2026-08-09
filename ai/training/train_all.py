@@ -29,6 +29,16 @@ def run_fire():
         logger.error(f"  ✗ {e}", exc_info=True); return {}
 
 
+def run_trajectory(days=30):
+    logger.info("━━━━ ⑤ Trajectory learning ━━━━")
+    try:
+        from ai.training.trajectory import train_trajectories
+        m = train_trajectories(days=days, activate=True)
+        logger.info(f"  ✓ {m.get('updated',0)} route(s) updated"); return m
+    except Exception as e:
+        logger.error(f"  ✗ {e}", exc_info=True); return {}
+
+
 def run_movement(days=30):
     logger.info("━━━━ ① Movement optimiser ━━━━")
     try:
@@ -56,7 +66,8 @@ def run_monitor(days=30):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--model",
-        choices=["all","movement","evacuation","monitor","fire"], default="all")
+        choices=["all","movement","evacuation","monitor","fire","trajectory"],
+        default="all")
     parser.add_argument("--days",type=int,default=30)
     parser.add_argument("--skip-check",action="store_true")
     args=parser.parse_args()
@@ -70,6 +81,7 @@ def main():
     # Fire first — evacuation uses its output as an input feature
     if args.model in ("all","fire"):       all_metrics["fire"]=run_fire()
     if args.model in ("all","movement"):   all_metrics["movement"]=run_movement(args.days)
+    if args.model in ("all","trajectory"): all_metrics["trajectory"]=run_trajectory(args.days)
     if args.model in ("all","evacuation"): all_metrics["evacuation"]=run_evacuation(max(args.days,90))
     if args.model in ("all","monitor"):    all_metrics["monitor"]=run_monitor(args.days)
     elapsed=(datetime.utcnow()-start).total_seconds()

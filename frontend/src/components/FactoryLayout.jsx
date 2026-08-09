@@ -8,6 +8,7 @@
 
 import { useState, useEffect } from "react";
 import BlueprintUpload from "./BlueprintUpload";
+import SensorGridPicker from "./SensorGridPicker";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 const PALETTE = ["#14b8a6","#3b82f6","#8b5cf6","#f59e0b",
@@ -28,6 +29,7 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
   const [cfg,      setCfg]      = useState({ factory_name:"", blueprint_url:"", grid_cols:6, grid_rows:5 });
   const [editZone, setEditZone] = useState(null);
   const [zoneSel,  setZoneSel]  = useState({});
+  const [zoneTh,   setZoneTh]   = useState({});
   const [newZone,  setNewZone]  = useState({ zone_id:"", name:"", description:"" });
 
   useEffect(() => { loadCfg(); }, []);
@@ -36,7 +38,10 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
     try {
       const d = await fetch(`${API}/api/config/factory`).then(r => r.json());
       setCfg({ factory_name:d.factory_name||"", blueprint_url:d.blueprint_url||"",
-               grid_cols:d.grid_cols||6, grid_rows:d.grid_rows||5 });
+               grid_cols:d.grid_cols||6, grid_rows:d.grid_rows||5,
+               temp_warning:d.temp_warning, temp_critical:d.temp_critical,
+               humidity_warning:d.humidity_warning,
+               humidity_critical:d.humidity_critical });
     } catch {}
   }
 
@@ -45,6 +50,10 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
       factory_name: cfg.factory_name,
       grid_cols:    parseInt(cfg.grid_cols),
       grid_rows:    parseInt(cfg.grid_rows),
+      temp_warning:      cfg.temp_warning      ?? null,
+      temp_critical:     cfg.temp_critical     ?? null,
+      humidity_warning:  cfg.humidity_warning  ?? null,
+      humidity_critical: cfg.humidity_critical ?? null,
     });
   }
 
@@ -60,9 +69,15 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
     });
   }
   function saveZone(z) {
-    apiCall("/api/config/zones", "POST",
-      { zone_id:z.zone_id, name:z.name, description:z.description,
-        sensor_ids: zoneSel[z.zone_id] || [] });
+    const th = zoneTh[z.zone_id] || {};
+    apiCall("/api/config/zones", "POST", {
+      zone_id: z.zone_id, name: z.name, description: z.description,
+      sensor_ids: zoneSel[z.zone_id] || [],
+      temp_warning:      th.temp_warning      ?? z.temp_warning      ?? null,
+      temp_critical:     th.temp_critical     ?? z.temp_critical     ?? null,
+      humidity_warning:  th.humidity_warning  ?? z.humidity_warning  ?? null,
+      humidity_critical: th.humidity_critical ?? z.humidity_critical ?? null,
+    });
     setEditZone(null);
   }
   function addZone() {
@@ -123,6 +138,30 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
           </div>
           <button style={btn("#22c55e")} onClick={saveFactory}>Apply</button>
         </div>
+        <div style={{ marginTop:16, paddingTop:14, borderTop:"1px solid #1e293b" }}>
+          <div style={{ fontSize:10, color:"#64748b", letterSpacing:1, marginBottom:8 }}>
+            GLOBAL THRESHOLD DEFAULTS
+            <span style={{ letterSpacing:0, marginLeft:6, color:"#475569" }}>
+              — used when neither the sensor nor its zone defines a limit
+            </span>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
+            {[
+              ["temp_warning",      "TEMP WARN °C"],
+              ["temp_critical",     "TEMP CRIT °C"],
+              ["humidity_warning",  "HUM WARN %"],
+              ["humidity_critical", "HUM CRIT %"],
+            ].map(([k, label]) => (
+              <div key={k}>
+                <span style={lbl}>{label}</span>
+                <input style={input} type="number" value={cfg[k] ?? ""}
+                  onChange={e => setCfg(p => ({ ...p,
+                    [k]: e.target.value === "" ? null : parseFloat(e.target.value) }))} />
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div style={{ fontSize:10, color:"#f59e0b", marginTop:10, lineHeight:1.6 }}>
           ⚠ Changing the grid regenerates sensors: {cols}×{rows} = <b>{cols*rows} sensors</b> (S01–S{String(cols*rows).padStart(2,"0")}).
           Sensors outside the new grid are removed; existing zone assignments are kept.
@@ -165,35 +204,52 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
               {/* Visual grid picker */}
               {editZone === z.zone_id ? (
                 <div>
-                  <div style={{
-                    display:"grid",
-                    gridTemplateColumns:`repeat(${cols}, 42px)`,
-                    gap:3, marginBottom:10,
-                    overflowX:"auto", maxWidth:"100%", paddingBottom:4 }}>
-                    {Array.from({ length: rows*cols }, (_, i) => {
-                      const sid   = sensorId(Math.floor(i/cols), i%cols);
-                      const mine  = sel.includes(sid);
-                      const other = owner[sid] && owner[sid] !== z.zone_id ? owner[sid] : null;
-                      return (
-                        <button key={sid} onClick={() => toggleSensor(z.zone_id, sid)}
-                          title={other ? `Currently in ${other}` : sid}
-                          style={{
-                            height:34, fontSize:9, fontWeight:700, cursor:"pointer",
-                            fontFamily:"monospace", borderRadius:4,
-                            border:`1px solid ${mine ? col : other ? zoneColor(other)+"66" : "#1e293b"}`,
-                            background: mine ? col+"44" : other ? zoneColor(other)+"18" : "#0a1628",
-                            color: mine ? col : other ? zoneColor(other) : "#334155",
-                          }}>
-                          {sid.replace("S","")}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <SensorGridPicker
+                    sensors={sensors} zones={zones}
+                    cols={cols} rows={rows}
+                    blueprintUrl={cfg.blueprint_url}
+                    selected={sel}
+                    onToggle={(sid) => toggleSensor(z.zone_id, sid)}
+                    mode="select" accent={col}
+                    highlightZone={z.zone_id} />
                   <div style={{ fontSize:10, color:"#64748b", marginBottom:10 }}>
                     {sel.length} sensor(s) selected
                     {sel.length > 0 && ` — ${sel.slice(0,10).join(", ")}${sel.length>10?"…":""}`}
                   </div>
-                  <div style={{ display:"flex", gap:8 }}>
+                  {/* Zone thresholds — inherited by every sensor in the zone */}
+                  <div style={{ marginTop:14, padding:"11px 13px",
+                    background:"#050c1a", borderRadius:8,
+                    border:"1px solid #1e293b" }}>
+                    <div style={{ fontSize:10, color:"#64748b", letterSpacing:1,
+                      marginBottom:8 }}>
+                      ZONE THRESHOLDS
+                      <span style={{ letterSpacing:0, marginLeft:6, color:"#475569" }}>
+                        — every sensor in this zone inherits these unless it
+                        defines its own. Leave blank to use the factory default.
+                      </span>
+                    </div>
+                    <div style={{ display:"grid",
+                      gridTemplateColumns:"repeat(4, 1fr)", gap:9 }}>
+                      {[
+                        ["temp_warning",      "TEMP WARN °C",  "50"],
+                        ["temp_critical",     "TEMP CRIT °C",  "60"],
+                        ["humidity_warning",  "HUM WARN %",    "70"],
+                        ["humidity_critical", "HUM CRIT %",    "85"],
+                      ].map(([k, label, ph]) => (
+                        <div key={k}>
+                          <span style={lbl}>{label}</span>
+                          <input style={input} type="number" placeholder={ph}
+                            value={zoneTh[z.zone_id]?.[k] ?? z[k] ?? ""}
+                            onChange={e => setZoneTh(p => ({ ...p,
+                              [z.zone_id]: { ...(p[z.zone_id] || {}),
+                                [k]: e.target.value === "" ? null
+                                     : parseFloat(e.target.value) } }))} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display:"flex", gap:8, marginTop:12 }}>
                     <button style={btn("#22c55e")} onClick={() => saveZone(z)}>Save zone</button>
                     <button style={btn("#6b7280")} onClick={() => setEditZone(null)}>Cancel</button>
                   </div>

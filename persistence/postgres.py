@@ -18,7 +18,13 @@ def get_conn(dsn: str = None):
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS zones (
-    zone_id TEXT PRIMARY KEY, name TEXT, description TEXT);
+    zone_id TEXT PRIMARY KEY, name TEXT, description TEXT,
+    -- Environmental thresholds for this zone. Sensors inherit these unless
+    -- they define their own. NULL means "fall back to the global default".
+    temp_warning      DOUBLE PRECISION,
+    temp_critical     DOUBLE PRECISION,
+    humidity_warning  DOUBLE PRECISION,
+    humidity_critical DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS sensors (
     sensor_id TEXT PRIMARY KEY, zone_id TEXT REFERENCES zones(zone_id),
     grid_row INT, grid_col INT, installed_at TIMESTAMPTZ DEFAULT NOW());
@@ -59,18 +65,44 @@ CREATE TABLE IF NOT EXISTS factory_config (
 );
 
 -- Default trajectory: ordered list of sensors an asset is supposed to work at
+-- Trajectories are versioned. The operator sets an INITIAL route at
+-- configuration time; the AI layer periodically learns an updated one from
+-- observed movement. Both are kept so the learned route can be compared with,
+-- or reverted to, the original.
 CREATE TABLE IF NOT EXISTS asset_trajectory (
-    asset_id  TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
-    seq       INT  NOT NULL,
-    sensor_id TEXT NOT NULL,
-    PRIMARY KEY (asset_id, seq)
+    asset_id   TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+    seq        INT  NOT NULL,
+    sensor_id  TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'configured',   -- 'configured' | 'learned'
+    version    INT  NOT NULL DEFAULT 1,
+    confidence DOUBLE PRECISION DEFAULT 1.0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset_id, source, version, seq)
 );
+
+-- One row per asset naming which trajectory version is currently active
+CREATE TABLE IF NOT EXISTS asset_trajectory_active (
+    asset_id   TEXT PRIMARY KEY REFERENCES assets(asset_id) ON DELETE CASCADE,
+    source     TEXT NOT NULL DEFAULT 'configured',
+    version    INT  NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_traj_asset_src
+    ON asset_trajectory (asset_id, source, version, seq);
 
 CREATE TABLE IF NOT EXISTS sensor_config (
     sensor_id     TEXT PRIMARY KEY REFERENCES sensors(sensor_id) ON DELETE CASCADE,
     coverage_type TEXT    NOT NULL DEFAULT 'passage',
     passable      BOOLEAN NOT NULL DEFAULT TRUE,
-    description   TEXT             DEFAULT ''
+    description   TEXT             DEFAULT '',
+    -- Sensor-level thresholds. NULL = inherit from the zone, which in turn
+    -- falls back to the global default. Resolution order:
+    --     sensor_config → zones → global env defaults
+    temp_warning      DOUBLE PRECISION,
+    temp_critical     DOUBLE PRECISION,
+    humidity_warning  DOUBLE PRECISION,
+    humidity_critical DOUBLE PRECISION
 );
 
 """
@@ -80,7 +112,11 @@ INSERT INTO factory_config (key, value) VALUES
   ('factory_name',  ''),
   ('blueprint_url', ''),
   ('grid_cols',     '0'),
-  ('grid_rows',     '0')
+  ('grid_rows',     '0'),
+  ('temp_warning',      '50'),
+  ('temp_critical',     '60'),
+  ('humidity_warning',  '70'),
+  ('humidity_critical', '85')
 ON CONFLICT (key) DO NOTHING;
 """
 

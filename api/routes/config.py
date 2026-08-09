@@ -30,11 +30,34 @@ MAX_BYTES   = 10 * 1024 * 1024   # 10 MB
 
 # ─── Broadcast helper ─────────────────────────────────────────────────────────
 
+def _refresh_engine(section: str):
+    """
+    Push configuration changes into the running engine.
+
+    Thresholds and authorisations are held in memory on the hot path, so they
+    must be re-resolved when the operator changes them — otherwise the change
+    only takes effect after a restart.
+    """
+    try:
+        from api.main import engine
+        if not engine:
+            return
+        if section in ("zones", "sensors", "factory", "grid", "all"):
+            if hasattr(engine, "reload_thresholds"):
+                engine.reload_thresholds()
+        if section in ("zones", "authorisations", "workers", "grid", "all"):
+            if hasattr(engine, "reload_authorisations"):
+                engine.reload_authorisations()
+    except Exception:
+        pass
+
+
 async def _notify(section: str, detail: dict = None):
     """
     Push a config_updated event to all connected dashboards so the monitoring
     view reloads the affected part of the configuration immediately.
     """
+    _refresh_engine(section)
     try:
         from api.main import ws_manager
         await ws_manager.broadcast("config_updated",
@@ -50,17 +73,33 @@ class FactoryConfig(BaseModel):
     blueprint_url: Optional[str] = None
     grid_cols:     Optional[int] = None
     grid_rows:     Optional[int] = None
+    # Global threshold defaults — the last level of the resolution chain
+    temp_warning:      Optional[float] = None
+    temp_critical:     Optional[float] = None
+    humidity_warning:  Optional[float] = None
+    humidity_critical: Optional[float] = None
 
 class ZoneBody(BaseModel):
     zone_id:     str
     name:        str
     description: Optional[str] = ""
     sensor_ids:  list[str] = []       # zone is DEFINED by these sensors
+    # Thresholds inherited by every sensor in the zone unless overridden.
+    # null = fall through to the global default.
+    temp_warning:      Optional[float] = None
+    temp_critical:     Optional[float] = None
+    humidity_warning:  Optional[float] = None
+    humidity_critical: Optional[float] = None
 
 class SensorConfigBody(BaseModel):
     coverage_type: str  = "passage"
     passable:      bool = True
     description:   Optional[str] = ""
+    # null = inherit from this sensor's zone
+    temp_warning:      Optional[float] = None
+    temp_critical:     Optional[float] = None
+    humidity_warning:  Optional[float] = None
+    humidity_critical: Optional[float] = None
 
 class WorkerBody(BaseModel):
     asset_id:           str
@@ -88,12 +127,18 @@ def get_factory_config():
     cols = int(cfg.get("grid_cols") or 0)
     rows = int(cfg.get("grid_rows") or 0)
     bp   = cfg.get("blueprint_url", "")
+    def _f(k, d):
+        try:    return float(cfg.get(k, d))
+        except (TypeError, ValueError): return d
     return {
         "factory_name":  cfg.get("factory_name", ""),
         "blueprint_url": bp,
         "grid_cols":     cols,
         "grid_rows":     rows,
-        # Mandatory before the dashboard will render anything
+        "temp_warning":      _f("temp_warning", 50.0),
+        "temp_critical":     _f("temp_critical", 60.0),
+        "humidity_warning":  _f("humidity_warning", 70.0),
+        "humidity_critical": _f("humidity_critical", 85.0),
         "configured":    bool(cols > 0 and rows > 0 and bp),
     }
 
@@ -284,13 +329,17 @@ def get_zones():
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT z.zone_id, z.name, z.description,
+                   z.temp_warning, z.temp_critical,
+                   z.humidity_warning, z.humidity_critical,
                    COALESCE(
                      array_agg(s.sensor_id ORDER BY s.grid_row, s.grid_col)
                      FILTER (WHERE s.sensor_id IS NOT NULL), '{}'
                    ) AS sensor_ids
             FROM zones z
             LEFT JOIN sensors s ON s.zone_id = z.zone_id
-            GROUP BY z.zone_id, z.name, z.description
+            GROUP BY z.zone_id, z.name, z.description,
+                     z.temp_warning, z.temp_critical,
+                     z.humidity_warning, z.humidity_critical
             ORDER BY z.zone_id
         """)
         return cur.fetchall()
@@ -305,10 +354,20 @@ async def save_zone(body: ZoneBody):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO zones (zone_id, name, description) VALUES (%s,%s,%s)
+            INSERT INTO zones (zone_id, name, description,
+                               temp_warning, temp_critical,
+                               humidity_warning, humidity_critical)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (zone_id) DO UPDATE
-              SET name = EXCLUDED.name, description = EXCLUDED.description
-        """, (body.zone_id, body.name, body.description))
+              SET name              = EXCLUDED.name,
+                  description       = EXCLUDED.description,
+                  temp_warning      = EXCLUDED.temp_warning,
+                  temp_critical     = EXCLUDED.temp_critical,
+                  humidity_warning  = EXCLUDED.humidity_warning,
+                  humidity_critical = EXCLUDED.humidity_critical
+        """, (body.zone_id, body.name, body.description,
+              body.temp_warning, body.temp_critical,
+              body.humidity_warning, body.humidity_critical))
 
         # Release sensors that are no longer part of this zone
         cur.execute("""
@@ -349,12 +408,39 @@ def get_sensors_config():
             SELECT s.sensor_id, s.zone_id, s.grid_row, s.grid_col,
                    COALESCE(sc.coverage_type, 'passage') AS coverage_type,
                    COALESCE(sc.passable,       TRUE)     AS passable,
-                   COALESCE(sc.description,    '')       AS description
+                   COALESCE(sc.description,    '')       AS description,
+                   sc.temp_warning, sc.temp_critical,
+                   sc.humidity_warning, sc.humidity_critical,
+                   z.temp_warning      AS zone_temp_warning,
+                   z.temp_critical     AS zone_temp_critical,
+                   z.humidity_warning  AS zone_humidity_warning,
+                   z.humidity_critical AS zone_humidity_critical
             FROM sensors s
             LEFT JOIN sensor_config sc USING (sensor_id)
+            LEFT JOIN zones z ON z.zone_id = s.zone_id
             ORDER BY s.grid_row, s.grid_col
         """)
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    # Annotate each sensor with the EFFECTIVE value and where it came from,
+    # so the UI can show "inherited from zone" rather than a blank field.
+    glob = get_factory_config()
+    out = []
+    for r in rows:
+        d = dict(r)
+        eff, src = {}, {}
+        for k in ("temp_warning","temp_critical",
+                  "humidity_warning","humidity_critical"):
+            if r.get(k) is not None:
+                eff[k], src[k] = float(r[k]), "sensor"
+            elif r.get(f"zone_{k}") is not None:
+                eff[k], src[k] = float(r[f"zone_{k}"]), "zone"
+            else:
+                eff[k], src[k] = float(glob.get(k, 0)), "global"
+        d["effective"] = eff
+        d["threshold_source"] = src
+        out.append(d)
+    return out
 
 
 @router.put("/sensors/{sensor_id}")
@@ -364,13 +450,22 @@ async def update_sensor_config(sensor_id: str, body: SensorConfigBody):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO sensor_config (sensor_id, coverage_type, passable, description)
-            VALUES (%s,%s,%s,%s)
+            INSERT INTO sensor_config
+                (sensor_id, coverage_type, passable, description,
+                 temp_warning, temp_critical,
+                 humidity_warning, humidity_critical)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (sensor_id) DO UPDATE
-              SET coverage_type = EXCLUDED.coverage_type,
-                  passable      = EXCLUDED.passable,
-                  description   = EXCLUDED.description
-        """, (sensor_id, body.coverage_type, body.passable, body.description))
+              SET coverage_type     = EXCLUDED.coverage_type,
+                  passable          = EXCLUDED.passable,
+                  description       = EXCLUDED.description,
+                  temp_warning      = EXCLUDED.temp_warning,
+                  temp_critical     = EXCLUDED.temp_critical,
+                  humidity_warning  = EXCLUDED.humidity_warning,
+                  humidity_critical = EXCLUDED.humidity_critical
+        """, (sensor_id, body.coverage_type, body.passable, body.description,
+              body.temp_warning, body.temp_critical,
+              body.humidity_warning, body.humidity_critical))
     conn.commit()
     await _notify("sensors", {"sensor_id": sensor_id})
     return {"status": "updated", "sensor_id": sensor_id}
@@ -393,12 +488,45 @@ def get_workers():
                    ), '[]') AS authorisations,
                    COALESCE((
                      SELECT json_agg(t.sensor_id ORDER BY t.seq)
-                     FROM asset_trajectory t WHERE t.asset_id = a.asset_id
-                   ), '[]') AS default_trajectory
+                     FROM asset_trajectory t
+                     JOIN asset_trajectory_active act
+                       ON act.asset_id = t.asset_id
+                      AND act.source   = t.source
+                      AND act.version  = t.version
+                     WHERE t.asset_id = a.asset_id
+                   ), '[]') AS default_trajectory,
+                   COALESCE((SELECT act.source FROM asset_trajectory_active act
+                             WHERE act.asset_id = a.asset_id), 'configured')
+                     AS trajectory_source,
+                   COALESCE((SELECT act.version FROM asset_trajectory_active act
+                             WHERE act.asset_id = a.asset_id), 1)
+                     AS trajectory_version
             FROM assets a
             ORDER BY a.asset_type, a.asset_id
         """)
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+        # A zone authorisation implicitly authorises EVERY sensor in that zone.
+        # Expand it here so the UI can show exactly which cells are covered
+        # without re-deriving the rule in JavaScript.
+        cur.execute("SELECT sensor_id, zone_id FROM sensors WHERE zone_id IS NOT NULL")
+        zone_sensors = {}
+        for r in cur.fetchall():
+            zone_sensors.setdefault(r["zone_id"], []).append(r["sensor_id"])
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        auths   = d.get("authorisations") or []
+        zones   = [a["id"] for a in auths if a.get("type") == "zone"]
+        direct  = [a["id"] for a in auths if a.get("type") == "sensor"]
+        implied = sorted({sid for z in zones for sid in zone_sensors.get(z, [])})
+        d["allowed_zones"]      = zones
+        d["allowed_sensors"]    = direct                      # explicitly granted
+        d["implied_sensors"]    = implied                     # via zone membership
+        d["effective_sensors"]  = sorted(set(direct) | set(implied))
+        out.append(d)
+    return out
 
 
 @router.post("/workers")
@@ -416,13 +544,31 @@ async def create_worker(body: WorkerBody):
     return {"status": "saved", "asset_id": body.asset_id}
 
 
-def _write_trajectory(cur, asset_id: str, sensors: list[str]):
-    """Replace an asset's default trajectory with the given ordered list."""
-    cur.execute("DELETE FROM asset_trajectory WHERE asset_id=%s", (asset_id,))
+def _write_trajectory(cur, asset_id: str, sensors: list[str],
+                      source: str = "configured", confidence: float = 1.0):
+    """
+    Store a trajectory version and make it active.
+
+    'configured' is the operator's initial route. The AI layer writes
+    'learned' versions over time; both are retained so the learned route can
+    be compared with, or reverted to, the original.
+    """
+    cur.execute("""SELECT COALESCE(MAX(version),0)+1 FROM asset_trajectory
+                   WHERE asset_id=%s AND source=%s""", (asset_id, source))
+    version = cur.fetchone()[0]
+
     for i, sid in enumerate(sensors or []):
-        cur.execute(
-            "INSERT INTO asset_trajectory (asset_id, seq, sensor_id) VALUES (%s,%s,%s)",
-            (asset_id, i, sid))
+        cur.execute("""INSERT INTO asset_trajectory
+                         (asset_id, seq, sensor_id, source, version, confidence)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (asset_id, i, sid, source, version, confidence))
+
+    cur.execute("""INSERT INTO asset_trajectory_active (asset_id, source, version)
+                   VALUES (%s,%s,%s)
+                   ON CONFLICT (asset_id) DO UPDATE
+                     SET source=EXCLUDED.source, version=EXCLUDED.version,
+                         updated_at=NOW()""",
+                (asset_id, source, version))
 
 
 @router.put("/workers/{asset_id}")
@@ -537,6 +683,54 @@ async def bulk_authorise(body: dict):
     await _notify("authorisations", {"bulk": True, "count": len(ids)})
     return {"status": "updated", "assets": len(ids),
             "zones": len(zones), "sensors": len(sens)}
+
+
+@router.get("/workers/{asset_id}/trajectory-versions")
+def trajectory_versions(asset_id: str):
+    """
+    Every stored trajectory for this asset — the operator's initial route plus
+    each version the AI has learned since, with the active one flagged.
+    """
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT source, version, MIN(created_at) AS created_at,
+                   MAX(confidence) AS confidence,
+                   array_agg(sensor_id ORDER BY seq) AS sensors
+            FROM asset_trajectory WHERE asset_id=%s
+            GROUP BY source, version
+            ORDER BY MIN(created_at) DESC
+        """, (asset_id,))
+        versions = cur.fetchall()
+        cur.execute("""SELECT source, version FROM asset_trajectory_active
+                       WHERE asset_id=%s""", (asset_id,))
+        act = cur.fetchone()
+    for v in versions:
+        v["active"] = bool(act and v["source"] == act["source"]
+                           and v["version"] == act["version"])
+    return versions
+
+
+@router.put("/workers/{asset_id}/trajectory-active")
+async def set_active_trajectory(asset_id: str, body: dict):
+    """Switch which trajectory version is in force. body: {source, version}"""
+    src = body.get("source", "configured")
+    ver = int(body.get("version", 1))
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT 1 FROM asset_trajectory
+                       WHERE asset_id=%s AND source=%s AND version=%s LIMIT 1""",
+                    (asset_id, src, ver))
+        if not cur.fetchone():
+            raise HTTPException(404, f"No {src} trajectory version {ver}")
+        cur.execute("""INSERT INTO asset_trajectory_active (asset_id, source, version)
+                       VALUES (%s,%s,%s)
+                       ON CONFLICT (asset_id) DO UPDATE
+                         SET source=EXCLUDED.source, version=EXCLUDED.version,
+                             updated_at=NOW()""", (asset_id, src, ver))
+    conn.commit()
+    await _notify("workers", {"asset_id": asset_id, "trajectory": f"{src} v{ver}"})
+    return {"status": "active", "source": src, "version": ver}
 
 
 @router.get("/workers/{asset_id}/trajectory")

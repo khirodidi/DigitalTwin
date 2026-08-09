@@ -427,3 +427,86 @@ running system without a restart.
 | ③ Monitor (AE) | 7 days of normal operation |
 | ③ Monitor (forecast) | 14 days |
 | ④ Fire | **none — synthetic** |
+
+---
+
+## ⑤ Trajectory Learning — routes evolve over time
+
+The `default_trajectory` an operator configures is the **initial** route only.
+Real work patterns drift: machines move, storage bays are reassigned, workers
+find shorter paths. This module mines observed movement and proposes an
+updated route.
+
+### Algorithm
+
+1. Extract every 8-hour shift's cell sequence from `location_events`
+2. Keep only shifts model ① rated efficient (`score ≥ 0.65`), so the learned
+   route reflects good practice rather than average practice
+3. Detect **stop points** — cells with ≥3 consecutive readings. This separates
+   work stations from corridors passed through
+4. Keep waypoints appearing in ≥35 % of shifts
+5. Order them by nearest-neighbour tour, seeded at the most common first stop
+6. Compare against the active route; store a new version only if materially
+   different (Jaccard similarity ≤ 0.85)
+
+### Input / Output
+
+| | |
+|---|---|
+| Input | `location_events` (30 days), active `asset_trajectory`, `sensor_config` |
+| Output | New `learned` trajectory version + confidence score |
+| Activation | Automatic when `confidence ≥ 0.60`, otherwise stored as a proposal |
+
+```
+confidence = 0.7 · mean_waypoint_support + 0.3 · sample_size_factor
+```
+
+### Verified behaviour
+
+Observed sequence `S03 S03 S03 S03 S04 S09 S09 S09 S09 S09 S09 S10 S15 S15…`
+
+| | |
+|---|---|
+| Detected stops | `S03, S09, S15` — corridors S04, S10 correctly excluded |
+| Learned route | `S03 → S09 → S15` |
+| Confidence | 0.88 |
+| Configured route | `S03 → S21` |
+| Similarity | 0.25 → materially different, update activated |
+
+### Versioning
+
+Both routes are retained. `asset_trajectory` stores every version keyed by
+`(source, version)`, and `asset_trajectory_active` names the one in force:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/config/workers/{id}/trajectory-versions` | Full history with the active one flagged |
+| `PUT /api/config/workers/{id}/trajectory-active` | Switch version — revert to the operator's original at any time |
+
+The operator's `configured` v1 is never deleted.
+
+---
+
+## Environmental threshold resolution
+
+Thresholds resolve through a three-level chain, each level falling through
+when it holds NULL:
+
+```
+sensor_config  →  zones  →  factory_config (global default)
+```
+
+| Sensor | Zone | T-warn | T-crit | Source |
+|---|---|---|---|---|
+| S01 | — | 50 | 60 | global / global |
+| S02 | furnace (70/85) | 70 | 85 | zone / zone |
+| S03 | furnace, own 45 | 45 | 85 | **sensor** / zone |
+| S04 | —, own crit 40 | 50 | 40 | global / **sensor** |
+
+This matters operationally: **65 °C is normal in a furnace zone but critical
+in a corridor.** Before this change a single global limit produced constant
+false criticals in hot areas and missed genuine problems in cool ones.
+
+Resolved values are cached in memory and refreshed automatically whenever the
+configuration changes — the config API calls `engine.reload_thresholds()`, so
+edits take effect without a restart.

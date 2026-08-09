@@ -8,6 +8,7 @@
 // =============================================================================
 
 import { useState, useEffect } from "react";
+import SensorGridPicker from "./SensorGridPicker";
 
 const API   = process.env.REACT_APP_API_URL || "http://localhost:8000";
 const TYPES = ["worker", "forklift", "pallet"];
@@ -24,7 +25,8 @@ const btn = (c="#6366f1", sm=false) => ({
   cursor:"pointer", fontFamily:"monospace", whiteSpace:"nowrap" });
 const lbl = { fontSize:10, color:"#64748b", marginBottom:4, display:"block", letterSpacing:1 };
 
-export default function WorkerManager({ workers, zones, sensors, apiCall, reload }) {
+export default function WorkerManager({ workers, zones, sensors, apiCall, reload,
+                                        cols = 6, rows = 5, blueprintUrl = "" }) {
   const [form,     setForm]     = useState({ asset_id:"", asset_type:"worker", name:"" });
   const [showForm, setShowForm] = useState(false);
   const [openId,   setOpenId]   = useState(null);
@@ -62,6 +64,17 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
   const toggleTraj = s => setTraj(p =>
     p.includes(s) ? p.filter(x=>x!==s) : [...p, s]);
 
+  // A zone authorisation covers EVERY sensor in that zone. Compute the
+  // implied set live so the operator sees the real coverage while editing.
+  const impliedSensors = (() => {
+    const out = new Set();
+    auth.allowed_zones.forEach(zid => {
+      const z = zones.find(x => x.zone_id === zid);
+      (z?.sensor_ids || []).forEach(sid => out.add(sid));
+    });
+    return [...out];
+  })();
+
   async function saveAuth(w) {
     await apiCall(`/api/config/workers/${w.asset_id}/authorisations`, "PUT", auth);
     await apiCall(`/api/config/workers/${w.asset_id}`, "PUT", {
@@ -93,47 +106,6 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
       asset_ids: "all", allowed_zones: zones.map(z=>z.zone_id),
       allowed_sensors: [], mode: "replace",
     });
-  }
-
-  // Compact grid picker used for both sensor auth and trajectory
-  function GridPicker({ selected, onToggle, accent, ordered }) {
-    const ordered_ = ordered || [];
-    return (
-      <div style={{ overflowX:"auto", maxWidth:"100%", paddingBottom:4 }}>
-        <div style={{ display:"grid",
-          gridTemplateColumns:`repeat(${cols}, 40px)`, gap:3 }}>
-          {sensors.map(s => {
-            const sid = s.sensor_id;
-            const on  = selected.includes(sid);
-            const idx = ordered_.indexOf(sid);
-            const zc  = sensorZone[sid] ? zoneColor(sensorZone[sid]) : "#334155";
-            return (
-              <button key={sid} onClick={() => onToggle(sid)}
-                title={`${sid}${sensorZone[sid] ? ` · ${sensorZone[sid]}` : ""}` +
-                       `${s.coverage_type ? ` · ${s.coverage_type}` : ""}` +
-                       `${s.passable === false ? " · NOT PASSABLE" : ""}`}
-                style={{
-                  height:34, fontSize:9, fontWeight:700, cursor:"pointer",
-                  fontFamily:"monospace", borderRadius:4, position:"relative",
-                  border:`1px solid ${on ? accent : zc + "55"}`,
-                  background: on ? accent+"38" : "#0a1628",
-                  color: on ? accent : "#475569",
-                  opacity: s.passable === false ? 0.45 : 1,
-                }}>
-                {sid.replace("S","")}
-                {idx >= 0 && (
-                  <span style={{ position:"absolute", top:-5, right:-4,
-                    background:accent, color:"#050c1a", borderRadius:"50%",
-                    width:13, height:13, fontSize:8, lineHeight:"13px" }}>
-                    {idx+1}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -249,8 +221,11 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
                 )}
               </div>
 
-              <span style={{ fontSize:10, color: tr.length ? "#a5b4fc" : "#334155" }}>
+              <span style={{ fontSize:10,
+                color: w.trajectory_source === "learned" ? "#c4b5fd"
+                     : tr.length ? "#a5b4fc" : "#334155" }}>
                 🧭 {tr.length ? `${tr.length} waypoints` : "no trajectory"}
+                {w.trajectory_source === "learned" && " · AI"}
               </span>
 
               <button style={btn(isOpen ? "#6b7280" : "#6366f1", true)}
@@ -301,23 +276,42 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
                   <div style={{ ...lbl, color:"#5eead4", fontWeight:700 }}>
                     2 · SENSOR AUTHORISATIONS — extra individual cells
                     <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
-                      {" "}(optional — {auth.allowed_sensors.length} selected)
+                      {" "}(optional — {auth.allowed_sensors.length} extra
+                      {impliedSensors.length > 0 &&
+                        `, ${impliedSensors.length} already covered by the zones above`})
                     </span>
                   </div>
-                  <GridPicker selected={auth.allowed_sensors}
-                    onToggle={toggleSensor} accent="#14b8a6" />
+                  <SensorGridPicker
+                    sensors={sensors} zones={zones} cols={cols} rows={rows}
+                    blueprintUrl={blueprintUrl}
+                    selected={auth.allowed_sensors}
+                    implied={impliedSensors}
+                    onToggle={toggleSensor}
+                    mode="select" accent="#14b8a6" />
                 </div>
 
                 {/* DEFAULT TRAJECTORY */}
                 <div style={{ marginTop:16 }}>
                   <div style={{ ...lbl, color:"#f59e0b", fontWeight:700 }}>
-                    3 · DEFAULT TRAJECTORY — where the asset works, in order
+                    3 · TRAJECTORY — initial route, refined by AI over time
                     <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
                       {" "}(click cells in visiting order)
                     </span>
+                    {w.trajectory_source === "learned" && (
+                      <span style={{ marginLeft:8, padding:"1px 7px", fontSize:9,
+                        borderRadius:3, background:"#7c3aed33", color:"#c4b5fd",
+                        border:"1px solid #7c3aed" }}>
+                        AI-learned v{w.trajectory_version}
+                      </span>
+                    )}
                   </div>
-                  <GridPicker selected={traj} onToggle={toggleTraj}
-                    accent="#f59e0b" ordered={traj} />
+                  <SensorGridPicker
+                    sensors={sensors} zones={zones} cols={cols} rows={rows}
+                    blueprintUrl={blueprintUrl}
+                    selected={traj}
+                    implied={impliedSensors}
+                    onToggle={toggleTraj}
+                    mode="ordered" accent="#f59e0b" />
                   {traj.length > 0 && (
                     <div style={{ marginTop:8, padding:"7px 11px",
                       background:"#050c1a", borderRadius:6, fontSize:10,

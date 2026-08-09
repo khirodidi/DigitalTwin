@@ -26,6 +26,8 @@ from models.state import (
     ZoneRegistry, SensorStatus, EnvStatus, AccessStatus,
 )
 
+# Fallback only — real limits come from engine.thresholds.resolver, which
+# resolves sensor_config → zones → factory_config for every sensor.
 TEMP_WARN  = 50.0
 TEMP_CRIT  = 60.0
 HUM_WARN   = 70.0
@@ -123,10 +125,19 @@ class StateStore:
             env_status       = EnvStatus.NORMAL,
             last_time_change = timestamp,
         )
-        state.env_status = state.compute_env_status(
-            t_warn=TEMP_WARN, t_crit=TEMP_CRIT,
-            h_warn=HUM_WARN,  h_crit=HUM_CRIT,
-        )
+        # Per-sensor thresholds: sensor override → zone → global default
+        try:
+            from engine.thresholds import resolver
+            th = resolver.get(sensor_id, zone_id)
+            state.env_status = state.compute_env_status(
+                t_warn=th.temp_warning,     t_crit=th.temp_critical,
+                h_warn=th.humidity_warning, h_crit=th.humidity_critical,
+            )
+        except Exception:
+            state.env_status = state.compute_env_status(
+                t_warn=TEMP_WARN, t_crit=TEMP_CRIT,
+                h_warn=HUM_WARN,  h_crit=HUM_CRIT,
+            )
         self._sensors[sensor_id] = state
         return state
 

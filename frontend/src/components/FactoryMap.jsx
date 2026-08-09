@@ -142,12 +142,255 @@ export default function FactoryMap({
         </div>
       )}
 
-      {blueprintSrc && (
-        <button onClick={()=>setFullscreen(true)} style={tbtn(false)}
-          title="Show the factory blueprint full screen">
-          ⛶  Blueprint full screen
-        </button>
+      <button onClick={()=>setFullscreen(true)} style={tbtn(false)}
+        title="Full screen — blueprint with sensors and workers">
+        ⛶  Full screen
+      </button>
+
+      <span style={{ marginLeft:"auto", fontSize:9, color:"#475569",
+        fontFamily:"monospace" }}>
+        {view === "3d" ? "blueprint ▸ workers ▸ sensors"
+                       : `${cols}×${rows} · ${rows*cols} sensors · ${zones.length} zones`}
+      </span>
+    </div>
+  );
+
+  // ── Fullscreen — the complete monitoring view, not just the image ───────
+  // Renders the blueprint WITH sensors, zone outlines and worker positions,
+  // scaled to fill the viewport. Honours the current 2D/3D mode.
+  const FullscreenView = () => {
+    const vw = typeof window !== "undefined" ? window.innerWidth  : 1600;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 900;
+    const scale = Math.min((vw - 60) / svgW, (vh - 140) / svgH);
+
+    const assetsHere = (id) => assetsBySensor[id] || [];
+
+    return (
+      <div style={{ position:"fixed", inset:0, zIndex:200,
+        background:"rgba(2,8,20,0.97)", display:"flex",
+        flexDirection:"column", overflow:"auto" }}>
+
+        {/* Toolbar */}
+        <div style={{ display:"flex", alignItems:"center", gap:12,
+          padding:"10px 18px", borderBottom:"1px solid #1e293b",
+          background:"#0d1829", flexShrink:0, flexWrap:"wrap" }}>
+          <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>
+            Factory — full screen
+          </span>
+          <div style={{ display:"flex", gap:0 }}>
+            {["2d","3d"].map(v => (
+              <button key={v} onClick={()=>setView(v)}
+                style={{ ...tbtn(view===v),
+                  borderRadius: v==="2d" ? "6px 0 0 6px" : "0 6px 6px 0" }}>
+                {v === "2d" ? "▦ 2D" : "◈ 3D"}
+              </button>
+            ))}
+          </div>
+          <span style={{ fontSize:10, color:"#475569", fontFamily:"monospace" }}>
+            {cols}×{rows} · {rows*cols} sensors · {zones.length} zones ·{" "}
+            {(assets||[]).length} assets
+          </span>
+          <div style={{ marginLeft:"auto", display:"flex", gap:10,
+            alignItems:"center" }}>
+            <span style={{ fontSize:10, color:"#475569" }}>Esc to close</span>
+            <button onClick={()=>setFullscreen(false)}
+              style={{ ...tbtn(false), fontSize:16, padding:"2px 12px" }}>×</button>
+          </div>
+        </div>
+
+        {/* Stage */}
+        <div style={{ flex:1, minHeight:0, overflow:"auto", padding:20,
+          display:"flex", alignItems:"flex-start", justifyContent:"center" }}>
+          {view === "3d" ? (
+            <div style={{ transform:`scale(${Math.min(scale*1.15, 1.9)})`,
+              transformOrigin:"top center" }}>
+              <Stage3D />
+            </div>
+          ) : (
+            <svg viewBox={`0 0 ${svgW} ${svgH}`}
+              width={svgW * Math.max(scale, 0.5)}
+              style={{ display:"block", background:"#0a1628", borderRadius:12 }}>
+              {showImage && (
+                <image href={blueprintSrc} x={0} y={0} width={svgW} height={svgH}
+                  preserveAspectRatio="xMidYMid slice" opacity={0.85} />
+              )}
+              {zoneEdges.map((e,i)=>(
+                <line key={i} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+                  stroke={e.c} strokeWidth="3" opacity={0.9} strokeLinecap="round"/>
+              ))}
+              {zoneLabels.map((z,i)=>(
+                <text key={i} x={z.x} y={z.y} fill={z.color} fontSize={11}
+                  fontWeight={700} fontFamily="monospace"
+                  style={{ textShadow:"0 1px 3px rgba(0,0,0,.95)" }}>
+                  {z.name} · {z.count} sensors
+                </text>
+              ))}
+              <rect x={MARGIN} y={MARGIN} width={gridW} height={gridH}
+                fill="none" stroke="#1e3a5f" strokeWidth="2" rx={4}/>
+              <foreignObject x={MARGIN} y={MARGIN} width={gridW} height={gridH}>
+                <div xmlns="http://www.w3.org/1999/xhtml" style={{
+                  display:"grid",
+                  gridTemplateColumns:`repeat(${cols}, ${CELL}px)`,
+                  gridTemplateRows:`repeat(${rows}, ${CELL}px)`, gap:GAP }}>
+                  {Array.from({length: rows*cols}, (_,i) => {
+                    const id = sensorId(Math.floor(i/cols), i%cols);
+                    return (
+                      <div key={id} style={{ position:"relative" }}>
+                        <SensorCell sensorId={id}
+                          sensor={sensorMap[id]} health={healthMap[id]}
+                          assets={assetsHere(id)} config={cfgMap[id]}
+                          zone={sensorZone[id]}
+                          onSelect={setSelected} cellPx={CELL}/>
+                        {/* Worker NAMES overlaid — the detail the small view omits */}
+                        {assetsHere(id).length > 0 && (
+                          <div style={{ position:"absolute", left:"50%", bottom:-4,
+                            transform:"translateX(-50%)", display:"flex",
+                            flexDirection:"column", gap:1, pointerEvents:"none",
+                            zIndex:5 }}>
+                            {assetsHere(id).slice(0,3).map(a => (
+                              <span key={a.id} style={{
+                                fontSize:8, fontFamily:"monospace", fontWeight:700,
+                                whiteSpace:"nowrap", padding:"1px 5px",
+                                borderRadius:3, background:"rgba(2,8,20,.92)",
+                                color: a.access_status === "violation"
+                                       ? "#fca5a5" : "#e2e8f0",
+                                border:`1px solid ${a.access_status === "violation"
+                                       ? "#ef4444" : "#334155"}` }}>
+                                {AICON[a.asset_type] || "📍"} {a.name || a.id}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </foreignObject>
+            </svg>
+          )}
+        </div>
+
+        {/* Asset roster */}
+        <div style={{ flexShrink:0, borderTop:"1px solid #1e293b",
+          background:"#0d1829", padding:"9px 18px", maxHeight:120,
+          overflowY:"auto" }}>
+          <div style={{ fontSize:9, color:"#475569", letterSpacing:1,
+            marginBottom:6 }}>ASSETS ({(assets||[]).length})</div>
+          <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
+            {(assets||[]).map(a => {
+              const viol = a.access_status === "violation";
+              const unk  = a.access_status === "unknown";
+              return (
+                <span key={a.id} style={{ fontSize:10, fontFamily:"monospace",
+                  padding:"3px 9px", borderRadius:5,
+                  background: viol ? "#7f1d1d33" : unk ? "#78350f33" : "#0a1628",
+                  border:`1px solid ${viol ? "#ef4444" : unk ? "#f59e0b" : "#1e293b"}`,
+                  color: viol ? "#fca5a5" : unk ? "#fcd34d" : "#94a3b8" }}>
+                  {AICON[a.asset_type] || "📍"} <b style={{ color:"#e2e8f0" }}>
+                    {a.name || a.id}</b>
+                  {" · "}{a.current_sensor_id || "—"}
+                  {viol && " ⚠"}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Esc closes the fullscreen blueprint
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = e => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  const gridW = cols*CELL + (cols-1)*GAP;
+  const gridH = rows*CELL + (rows-1)*GAP;
+  const svgW  = MARGIN*2 + gridW;
+  const svgH  = MARGIN*2 + gridH;
+
+  const sid = (r,c) => `S${String(r*cols + c + 1).padStart(2,"0")}`;
+  const posOf = s => {
+    const n = parseInt(String(s).replace(/\D/g,""),10) - 1;
+    return { row: Math.floor(n/cols), col: n%cols };
+  };
+  const showImg = blueprintSrc && !imgError;
+
+  // ── Zone outline segments: draw a border only where a cell's neighbour
+  //    belongs to a different zone, producing a clean zone perimeter.
+  const zoneEdges = useMemo(() => {
+    const segs = [];
+    for (let r=0; r<rows; r++) for (let c=0; c<cols; c++) {
+      const z = sensorZone[sid(r,c)];
+      if (!z) continue;
+      const x = MARGIN + c*(CELL+GAP) - GAP/2;
+      const y = MARGIN + r*(CELL+GAP) - GAP/2;
+      const w = CELL+GAP, h = CELL+GAP;
+      const diff = (rr,cc) => {
+        if (rr<0||cc<0||rr>=rows||cc>=cols) return true;
+        const o = sensorZone[sid(rr,cc)];
+        return !o || o.zone_id !== z.zone_id;
+      };
+      if (diff(r-1,c)) segs.push({ x1:x,     y1:y,     x2:x+w, y2:y,     c:z.color });
+      if (diff(r+1,c)) segs.push({ x1:x,     y1:y+h,   x2:x+w, y2:y+h,   c:z.color });
+      if (diff(r,c-1)) segs.push({ x1:x,     y1:y,     x2:x,   y2:y+h,   c:z.color });
+      if (diff(r,c+1)) segs.push({ x1:x+w,   y1:y,     x2:x+w, y2:y+h,   c:z.color });
+    }
+    return segs;
+  }, [sensorZone, rows, cols]);
+
+  // Zone label anchored at each zone's top-left cell
+  const zoneLabels = useMemo(() => (zones||[]).map((z,i) => {
+    const cells = (z.sensor_ids||[]).map(posOf);
+    if (!cells.length) return null;
+    const minR = Math.min(...cells.map(p=>p.row));
+    const minC = Math.min(...cells.map(p=>p.col));
+    return { name:z.name, count:cells.length, color:PALETTE[i%PALETTE.length],
+             x: MARGIN + minC*(CELL+GAP) + 5,
+             y: MARGIN + minR*(CELL+GAP) + 12 };
+  }).filter(Boolean), [zones, cols]);
+
+  const tbtn = (active) => ({
+    padding:"6px 14px", fontSize:11, fontWeight:700, fontFamily:"monospace",
+    cursor:"pointer", borderRadius:6,
+    border:`1px solid ${active ? "#6366f1" : "#1e293b"}`,
+    background: active ? "#6366f133" : "#0d1829",
+    color: active ? "#a5b4fc" : "#475569",
+  });
+
+  const Toolbar = () => (
+    <div style={{ display:"flex", gap:8, marginBottom:10,
+      alignItems:"center", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:0 }}>
+        {["2d","3d"].map(v => (
+          <button key={v} onClick={()=>setView(v)}
+            style={{ ...tbtn(view===v),
+              borderRadius: v==="2d" ? "6px 0 0 6px" : "0 6px 6px 0" }}>
+            {v === "2d" ? "▦  2D" : "◈  3D"}
+          </button>
+        ))}
+      </div>
+
+      {view === "2d" && (
+        <div style={{ display:"flex", gap:0, marginLeft:4 }}>
+          <button onClick={()=>setZoom(z=>Math.max(0.4, +(z-0.2).toFixed(2)))}
+            style={{ ...tbtn(false), borderRadius:"6px 0 0 6px" }}>−</button>
+          <button onClick={()=>setZoom(1)}
+            style={{ ...tbtn(zoom!==1), borderRadius:0, minWidth:56 }}>
+            {Math.round(zoom*100)}%
+          </button>
+          <button onClick={()=>setZoom(z=>Math.min(2.5, +(z+0.2).toFixed(2)))}
+            style={{ ...tbtn(false), borderRadius:"0 6px 6px 0" }}>+</button>
+        </div>
       )}
+
+      <button onClick={()=>setFullscreen(true)} style={tbtn(false)}
+        title="Full screen — blueprint with sensors and workers">
+        ⛶  Full screen
+      </button>
 
       <span style={{ marginLeft:"auto", fontSize:9, color:"#475569",
         fontFamily:"monospace" }}>
@@ -158,30 +401,12 @@ export default function FactoryMap({
   );
 
   // ── Fullscreen blueprint overlay ──
-  const FullscreenBlueprint = () => (
-    <div onClick={()=>setFullscreen(false)}
-      style={{ position:"fixed", inset:0, zIndex:200,
-        background:"rgba(2,8,20,0.96)", display:"flex",
-        flexDirection:"column", alignItems:"center", justifyContent:"center",
-        padding:20, cursor:"zoom-out" }}>
-      <div style={{ position:"absolute", top:16, right:20, display:"flex", gap:10 }}>
-        <span style={{ fontSize:10, color:"#475569", fontFamily:"monospace",
-          alignSelf:"center" }}>click anywhere or press Esc to close</span>
-        <button onClick={()=>setFullscreen(false)}
-          style={{ ...tbtn(false), fontSize:16, padding:"2px 12px" }}>×</button>
-      </div>
-      <img src={blueprintSrc} alt="Factory blueprint"
-        onClick={e => e.stopPropagation()}
-        style={{ maxWidth:"96vw", maxHeight:"88vh", objectFit:"contain",
-          borderRadius:8, border:"1px solid #1e3a5f",
-          boxShadow:"0 20px 60px rgba(0,0,0,.9)", cursor:"default" }} />
-    </div>
-  );
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  3D ISOMETRIC VIEW
   // ═══════════════════════════════════════════════════════════════════════════
-  if (view === "3d") {
+  // Shared 3D stage, used inline and in fullscreen
+  function Stage3D() {
     const SCALE = 0.82;
     const W = svgW * SCALE, H = svgH * SCALE;
     // Layer separation capped so the top layer sits at most 2x a sensor
@@ -199,8 +424,6 @@ export default function FactoryMap({
     );
 
     return (
-      <>
-        <Toolbar />
         <div style={{
           position:"relative", height:stageH, width:"100%",
           perspective:"1600px", perspectiveOrigin:"50% 42%",
@@ -330,8 +553,16 @@ export default function FactoryMap({
           </div>
         </div>
 
-        {fullscreen && blueprintSrc && <FullscreenBlueprint />}
+    );
+  }
 
+  // ── 3D view ──────────────────────────────────────────────────────────────
+  if (view === "3d") {
+    return (
+      <>
+        <Toolbar />
+        <Stage3D />
+        {fullscreen && <FullscreenView />}
         {selected && (
           <SensorDetail sensorId={selected} sensor={sensorMap[selected]}
             health={healthMap[selected]} assets={assetsBySensor[selected]||[]}
@@ -414,7 +645,7 @@ export default function FactoryMap({
         </svg>
       </div>
 
-      {fullscreen && blueprintSrc && <FullscreenBlueprint />}
+      {fullscreen && <FullscreenView />}
 
       {selected && (
         <SensorDetail sensorId={selected} sensor={sensorMap[selected]}

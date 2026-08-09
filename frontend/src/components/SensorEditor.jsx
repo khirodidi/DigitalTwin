@@ -48,6 +48,10 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
       coverage_type: current(s, "coverage_type"),
       passable:      current(s, "passable"),
       description:   current(s, "description") || "",
+      temp_warning:      current(s, "temp_warning")      ?? null,
+      temp_critical:     current(s, "temp_critical")     ?? null,
+      humidity_warning:  current(s, "humidity_warning")  ?? null,
+      humidity_critical: current(s, "humidity_critical") ?? null,
     };
     await apiCall(`/api/config/sensors/${s.sensor_id}`, "PUT", payload);
     setSaving(null);
@@ -69,6 +73,16 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
 
   return (
     <div>
+      <div style={{ marginBottom:12, padding:"9px 13px", background:"#0d1829",
+        border:"1px solid #1e293b", borderRadius:8, fontSize:10,
+        color:"#64748b", lineHeight:1.7 }}>
+        <b style={{ color:"#94a3b8" }}>Threshold inheritance:</b>{" "}
+        sensor override → zone default → factory default. A blank field shows
+        the inherited value as grey placeholder text; typing a number overrides
+        it for that sensor only.{" "}
+        <span style={{ color:"#a5b4fc" }}>Blue placeholder = inherited from the zone.</span>
+      </div>
+
       {/* Legend */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {TYPES.map(t => (
@@ -114,14 +128,15 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
         {/* Header */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "60px 100px 160px 80px 1fr 80px",
+          gridTemplateColumns: "58px 92px 140px 68px 1fr 190px 74px",
           gap: 0, padding: "8px 12px",
           background: "#0a1628", fontSize: 9, fontWeight: 700,
           color: "#475569", letterSpacing: 1,
           position:"sticky", top:0, zIndex:2,
         }}>
-          <span>ID</span><span>ZONE</span><span>COVERAGE TYPE</span>
-          <span>PASSABLE</span><span>DESCRIPTION</span><span></span>
+          <span>ID</span><span>ZONE</span><span>COVERAGE</span>
+          <span>PASSABLE</span><span>DESCRIPTION</span>
+          <span>THRESHOLDS (blank = inherit)</span><span></span>
         </div>
 
         {displayed.map((s, i) => {
@@ -136,7 +151,7 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
           return (
             <div key={s.sensor_id} style={{
               display: "grid",
-              gridTemplateColumns: "60px 100px 160px 80px 1fr 80px",
+              gridTemplateColumns: "58px 92px 140px 68px 1fr 190px 74px",
               gap: 0, padding: "6px 12px", alignItems: "center",
               borderTop: i > 0 ? "1px solid #0a1628" : "none",
               background: isDirty ? "#1e2a1e" : (i % 2 === 0 ? "#0d1829" : "#0a1628"),
@@ -177,6 +192,35 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
                 placeholder={`e.g. Press machine A, Emergency exit north`}
                 value={desc}
                 onChange={e => edit(s.sensor_id, "description", e.target.value)} />
+
+              {/* Threshold overrides — placeholder shows the inherited value */}
+              <div style={{ display:"flex", gap:3 }}>
+                {[
+                  ["temp_warning",      "Tw"],
+                  ["temp_critical",     "Tc"],
+                  ["humidity_warning",  "Hw"],
+                  ["humidity_critical", "Hc"],
+                ].map(([k, tag]) => {
+                  const own  = current(s, k);
+                  const eff  = s.effective?.[k];
+                  const from = s.threshold_source?.[k] || "global";
+                  return (
+                    <input key={k} type="number"
+                      title={`${tag} — effective ${eff ?? "?"} (from ${from}).`
+                             + ` Leave blank to inherit.`}
+                      placeholder={eff != null ? String(Math.round(eff)) : tag}
+                      value={own ?? ""}
+                      onChange={e => edit(s.sensor_id, k,
+                        e.target.value === "" ? null : parseFloat(e.target.value))}
+                      style={{ ...input, width:42, padding:"3px 4px", fontSize:9.5,
+                        textAlign:"center",
+                        color: own != null ? "#e2e8f0"
+                             : from === "zone" ? "#a5b4fc" : "#475569",
+                        borderColor: own != null ? "#6366f1"
+                                   : from === "zone" ? "#6366f144" : "#1e293b" }} />
+                  );
+                })}
+              </div>
 
               {/* Save button */}
               <button

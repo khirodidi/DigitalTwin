@@ -146,13 +146,18 @@ export default function ConfigPage({ onBack }) {
       {/* Tab content */}
       <div style={S.body}>
         {tab === "layout"     && <FactoryLayout zones={zones} sensors={sensors} apiCall={apiCall} reload={reload} />}
-        {tab === "sensors"    && <SensorEditor  sensors={sensors} zones={zones} apiCall={apiCall} />}
+        {tab === "sensors"    && <SensorEditor  sensors={sensors} zones={zones}
+                                                apiCall={apiCall} />}
         {tab === "workers"    && <WorkerManager workers={workers} zones={zones}
-                                                sensors={sensors} apiCall={apiCall} reload={reload} />}
+                                                sensors={sensors} apiCall={apiCall} reload={reload}
+                                                cols={factory.grid_cols} rows={factory.grid_rows}
+                                                blueprintUrl={factory.blueprint_url} />}
         {tab === "trajectory" && <TrajectoryMap workers={workers} sensors={sensors}
                                                 zones={zones}
                                                 cols={factory.grid_cols}
-                                                rows={factory.grid_rows} />}
+                                                rows={factory.grid_rows}
+                                                blueprintUrl={factory.blueprint_url}
+                                                apiCall={apiCall} />}
       </div>
 
       {/* Toast */}

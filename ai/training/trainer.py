@@ -38,6 +38,7 @@ class AITrainer:
         # Fire trains first — evacuation consumes its output as a feature
         await self._run("fire")
         await self._run("movement")
+        await self._run("trajectory")   # refine routes from observed movement
         await self._run("evacuation")
         await self._run("monitor")
         self._reload()
@@ -56,6 +57,9 @@ class AITrainer:
             elif model == "fire":
                 from ai.training.fire       import train_fire_model
                 train_fire_model(model_path=str(MODEL_DIR/"fire_convlstm.pt"))
+            elif model == "trajectory":
+                from ai.training.trajectory import train_trajectories
+                train_trajectories(days=30, activate=True)
             logger.info(f"[AITrainer] {model} retrained.")
         except Exception as e:
             logger.error(f"[AITrainer] {model} failed: {e}", exc_info=True)
