@@ -92,12 +92,10 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
 
   const cols = parseInt(cfg.grid_cols) || 6;
   const rows = parseInt(cfg.grid_rows) || 5;
-  const sensorId = (r,c) => `S${String(r*cols+c+1).padStart(2,"0")}`;
 
   // sensor_id → zone_id (for showing which zone owns each cell)
   const owner = {};
   zones.forEach(z => (z.sensor_ids||[]).forEach(s => { owner[s] = z.zone_id; }));
-  const zoneColor = zid => PALETTE[zones.findIndex(z=>z.zone_id===zid) % PALETTE.length];
 
   const unassigned = sensors.filter(s => !s.zone_id).length;
 

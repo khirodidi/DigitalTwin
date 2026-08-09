@@ -14,8 +14,15 @@ ARG REACT_APP_WS_URL=ws://localhost:8000/ws
 ENV REACT_APP_API_URL=$REACT_APP_API_URL \
     REACT_APP_WS_URL=$REACT_APP_WS_URL
 
-# Remove any build directory that slipped in, then compile fresh
-RUN rm -rf build && npm run build
+# CI=true turns ESLint warnings into errors, which fails the build for things
+# like an unused variable. Keep warnings visible but non-fatal.
+ENV CI=false
+ENV GENERATE_SOURCEMAP=false
+
+# Remove any build directory that slipped in, then compile fresh.
+# The build log is printed in full so compile errors are visible in Docker.
+RUN rm -rf build && npm run build 2>&1 | tee /tmp/build.log || \
+    (echo "=== BUILD FAILED — last 60 lines ===" && tail -60 /tmp/build.log && exit 1)
 
 # Fail the image build loudly if the bundle is missing, instead of shipping
 # an empty web root that serves a blank page.

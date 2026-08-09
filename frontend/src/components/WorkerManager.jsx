@@ -7,7 +7,7 @@
 //   • "Authorise all" rescue button to clear a violation storm
 // =============================================================================
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import SensorGridPicker from "./SensorGridPicker";
 
 const API   = process.env.REACT_APP_API_URL || "http://localhost:8000";
