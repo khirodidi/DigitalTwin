@@ -14,6 +14,7 @@ import StatusBar   from "./components/StatusBar";
 import AlertPanel  from "./components/AlertPanel";
 import AssetList   from "./components/AssetList";
 import ConfigPage  from "./pages/ConfigPage";
+import SetupScreen from "./pages/SetupScreen";
 
 function reducer(state, action) {
   switch (action.type) {
@@ -47,7 +48,7 @@ export default function App() {
 
   // ── Runtime configuration (grid, blueprint, zones, sensor metadata) ───────
   const { config, sensors: sensorConfig, zones, cols, rows,
-          blueprintSrc, refresh, loading } = useConfig();
+          blueprintSrc, refresh, loading, configured } = useConfig();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -77,6 +78,27 @@ export default function App() {
   // ── Config page — refresh monitoring data when returning ──────────────────
   if (page === "config") {
     return <ConfigPage onBack={() => { refresh("all"); setPage("monitor"); }} />;
+  }
+
+  // ── Wait for the first config fetch before deciding what to show ──────────
+  if (loading) {
+    return (
+      <div style={{ height:"100vh", display:"flex", alignItems:"center",
+        justifyContent:"center", background:"#050c1a", color:"#334155",
+        fontFamily:"monospace", fontSize:13 }}>
+        Loading configuration…
+      </div>
+    );
+  }
+
+  // ── Not configured yet: grid size and blueprint are mandatory ─────────────
+  if (!configured) {
+    return (
+      <SetupScreen
+        onDone={() => refresh("all")}
+        onOpenConfig={() => setPage("config")}
+      />
+    );
   }
 
   const sensorArr = Object.values(state.sensors);
@@ -140,17 +162,11 @@ export default function App() {
         {/* Centre — scrolls both axes (wide grids scroll horizontally) */}
         <div style={{ flex:1, minWidth:0, minHeight:0,
                       overflowX:"auto", overflowY:"auto", padding:16 }}>
-          {loading ? (
-            <div style={{ padding:48, textAlign:"center", color:"#334155" }}>
-              Loading factory configuration…
-            </div>
-          ) : (
-            <FactoryMap
-              sensors={sensorArr} health={healthArr} assets={assetArr}
-              cols={cols} rows={rows}
-              blueprintSrc={blueprintSrc}
-              zones={zones} sensorConfig={sensorConfig} />
-          )}
+          <FactoryMap
+            sensors={sensorArr} health={healthArr} assets={assetArr}
+            cols={cols} rows={rows}
+            blueprintSrc={blueprintSrc}
+            zones={zones} sensorConfig={sensorConfig} />
 
           {state.systemState && (
             <div style={{ display:"flex", gap:8, marginTop:12, flexWrap:"wrap" }}>

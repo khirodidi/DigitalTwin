@@ -77,10 +77,10 @@ CREATE TABLE IF NOT EXISTS sensor_config (
 
 DEFAULT_CONFIG_SQL = """
 INSERT INTO factory_config (key, value) VALUES
-  ('factory_name',  'Factory A'),
+  ('factory_name',  ''),
   ('blueprint_url', ''),
-  ('grid_cols',     '6'),
-  ('grid_rows',     '5')
+  ('grid_cols',     '0'),
+  ('grid_rows',     '0')
 ON CONFLICT (key) DO NOTHING;
 """
 

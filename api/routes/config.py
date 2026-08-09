@@ -85,11 +85,16 @@ def get_factory_config():
         rows = cur.fetchall()
     cfg = {r["key"]: r["value"] for r in rows}
     # Coerce numeric fields so the frontend gets real numbers
+    cols = int(cfg.get("grid_cols") or 0)
+    rows = int(cfg.get("grid_rows") or 0)
+    bp   = cfg.get("blueprint_url", "")
     return {
-        "factory_name":  cfg.get("factory_name", "Factory"),
-        "blueprint_url": cfg.get("blueprint_url", ""),
-        "grid_cols":     int(cfg.get("grid_cols", 6)),
-        "grid_rows":     int(cfg.get("grid_rows", 5)),
+        "factory_name":  cfg.get("factory_name", ""),
+        "blueprint_url": bp,
+        "grid_cols":     cols,
+        "grid_rows":     rows,
+        # Mandatory before the dashboard will render anything
+        "configured":    bool(cols > 0 and rows > 0 and bp),
     }
 
 
@@ -101,7 +106,7 @@ async def update_factory_config(body: FactoryConfig):
 
     # Validate grid bounds
     for key in ("grid_cols", "grid_rows"):
-        if key in updates and not (1 <= int(updates[key]) <= 30):
+        if key in updates and not (0 <= int(updates[key]) <= 30):
             raise HTTPException(400, f"{key} must be between 1 and 30")
 
     conn = get_conn()

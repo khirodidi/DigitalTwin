@@ -16,6 +16,13 @@
 -- will automatically reflect whatever you put here.
 -- =============================================================================
 
+-- ─── Factory grid (blueprint must still be uploaded in the UI) ────────────────
+INSERT INTO factory_config (key, value) VALUES
+  ('factory_name', 'Factory A'),
+  ('grid_cols',    '6'),
+  ('grid_rows',    '5')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
 -- ─── Safety: re-run friendly ──────────────────────────────────────────────────
 TRUNCATE authorisations, assets, sensors, zones RESTART IDENTITY CASCADE;
 

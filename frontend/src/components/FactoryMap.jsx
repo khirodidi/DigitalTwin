@@ -7,7 +7,7 @@
 //       layer 2  sensors floating above the workers
 // =============================================================================
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import SensorCell   from "./SensorCell";
 import SensorDetail from "./SensorDetail";
 
@@ -21,9 +21,11 @@ export default function FactoryMap({
   sensors, health, assets, cols = 6, rows = 5,
   blueprintSrc = null, zones = [], sensorConfig = [],
 }) {
-  const [selected, setSelected] = useState(null);
-  const [imgError, setImgError] = useState(false);
-  const [view,     setView]     = useState("2d");     // "2d" | "3d"
+  const [selected,   setSelected]   = useState(null);
+  const [imgError,   setImgError]   = useState(false);
+  const [view,       setView]       = useState("2d");   // "2d" | "3d"
+  const [fullscreen, setFullscreen] = useState(false);  // blueprint overlay
+  const [zoom,       setZoom]       = useState(1);
 
   const sensorMap = useMemo(() => Object.fromEntries(
     (sensors||[]).map(s => [s.sensor_id, s])), [sensors]);
@@ -51,6 +53,14 @@ export default function FactoryMap({
     });
     return m;
   }, [zones]);
+
+  // Esc closes the fullscreen blueprint
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = e => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
 
   const gridW = cols*CELL + (cols-1)*GAP;
   const gridH = rows*CELL + (rows-1)*GAP;
@@ -98,25 +108,73 @@ export default function FactoryMap({
              y: MARGIN + minR*(CELL+GAP) + 12 };
   }).filter(Boolean), [zones, cols]);
 
-  const ViewToggle = () => (
-    <div style={{ display:"flex", gap:0, marginBottom:10 }}>
-      {["2d","3d"].map(v => (
-        <button key={v} onClick={()=>setView(v)}
-          style={{ padding:"6px 18px", fontSize:11, fontWeight:700,
-            fontFamily:"monospace", cursor:"pointer",
-            border:`1px solid ${view===v ? "#6366f1" : "#1e293b"}`,
-            borderRadius: v==="2d" ? "6px 0 0 6px" : "0 6px 6px 0",
-            background: view===v ? "#6366f133" : "#0d1829",
-            color: view===v ? "#a5b4fc" : "#475569" }}>
-          {v === "2d" ? "▦  2D" : "◈  3D"}
-        </button>
-      ))}
-      {view === "3d" && (
-        <span style={{ marginLeft:12, alignSelf:"center", fontSize:9,
-          color:"#475569", fontFamily:"monospace" }}>
-          blueprint ▸ workers ▸ sensors
-        </span>
+  const tbtn = (active) => ({
+    padding:"6px 14px", fontSize:11, fontWeight:700, fontFamily:"monospace",
+    cursor:"pointer", borderRadius:6,
+    border:`1px solid ${active ? "#6366f1" : "#1e293b"}`,
+    background: active ? "#6366f133" : "#0d1829",
+    color: active ? "#a5b4fc" : "#475569",
+  });
+
+  const Toolbar = () => (
+    <div style={{ display:"flex", gap:8, marginBottom:10,
+      alignItems:"center", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:0 }}>
+        {["2d","3d"].map(v => (
+          <button key={v} onClick={()=>setView(v)}
+            style={{ ...tbtn(view===v),
+              borderRadius: v==="2d" ? "6px 0 0 6px" : "0 6px 6px 0" }}>
+            {v === "2d" ? "▦  2D" : "◈  3D"}
+          </button>
+        ))}
+      </div>
+
+      {view === "2d" && (
+        <div style={{ display:"flex", gap:0, marginLeft:4 }}>
+          <button onClick={()=>setZoom(z=>Math.max(0.4, +(z-0.2).toFixed(2)))}
+            style={{ ...tbtn(false), borderRadius:"6px 0 0 6px" }}>−</button>
+          <button onClick={()=>setZoom(1)}
+            style={{ ...tbtn(zoom!==1), borderRadius:0, minWidth:56 }}>
+            {Math.round(zoom*100)}%
+          </button>
+          <button onClick={()=>setZoom(z=>Math.min(2.5, +(z+0.2).toFixed(2)))}
+            style={{ ...tbtn(false), borderRadius:"0 6px 6px 0" }}>+</button>
+        </div>
       )}
+
+      {blueprintSrc && (
+        <button onClick={()=>setFullscreen(true)} style={tbtn(false)}
+          title="Show the factory blueprint full screen">
+          ⛶  Blueprint full screen
+        </button>
+      )}
+
+      <span style={{ marginLeft:"auto", fontSize:9, color:"#475569",
+        fontFamily:"monospace" }}>
+        {view === "3d" ? "blueprint ▸ workers ▸ sensors"
+                       : `${cols}×${rows} · ${rows*cols} sensors · ${zones.length} zones`}
+      </span>
+    </div>
+  );
+
+  // ── Fullscreen blueprint overlay ──
+  const FullscreenBlueprint = () => (
+    <div onClick={()=>setFullscreen(false)}
+      style={{ position:"fixed", inset:0, zIndex:200,
+        background:"rgba(2,8,20,0.96)", display:"flex",
+        flexDirection:"column", alignItems:"center", justifyContent:"center",
+        padding:20, cursor:"zoom-out" }}>
+      <div style={{ position:"absolute", top:16, right:20, display:"flex", gap:10 }}>
+        <span style={{ fontSize:10, color:"#475569", fontFamily:"monospace",
+          alignSelf:"center" }}>click anywhere or press Esc to close</span>
+        <button onClick={()=>setFullscreen(false)}
+          style={{ ...tbtn(false), fontSize:16, padding:"2px 12px" }}>×</button>
+      </div>
+      <img src={blueprintSrc} alt="Factory blueprint"
+        onClick={e => e.stopPropagation()}
+        style={{ maxWidth:"96vw", maxHeight:"88vh", objectFit:"contain",
+          borderRadius:8, border:"1px solid #1e3a5f",
+          boxShadow:"0 20px 60px rgba(0,0,0,.9)", cursor:"default" }} />
     </div>
   );
 
@@ -126,8 +184,10 @@ export default function FactoryMap({
   if (view === "3d") {
     const SCALE = 0.82;
     const W = svgW * SCALE, H = svgH * SCALE;
-    const LAYER_GAP = 120;                       // vertical separation of planes
-    const stageH = H * 0.75 + LAYER_GAP*2 + 140;
+    // Layer separation capped so the top layer sits at most 2x a sensor
+    // width above the blueprint (previously 240px — far too detached).
+    const LAYER_GAP = Math.round(CELL * SCALE * 0.5);   // ≈ 39px per layer
+    const stageH = H * 0.72 + LAYER_GAP * 2 + 120;
 
     const plate = (children, lift, z) => (
       <div style={{
@@ -140,12 +200,13 @@ export default function FactoryMap({
 
     return (
       <>
-        <ViewToggle />
+        <Toolbar />
         <div style={{
           position:"relative", height:stageH, width:"100%",
           perspective:"1600px", perspectiveOrigin:"50% 42%",
           background:"radial-gradient(ellipse at 50% 40%, #0d1e3a 0%, #050c1a 72%)",
-          borderRadius:12, border:"1px solid #1e3a5f", overflow:"hidden",
+          borderRadius:12, border:"1px solid #1e3a5f",
+          overflow:"auto", maxHeight:"calc(100vh - 260px)",
         }}>
           {/* ── LAYER 0 — blueprint ground plane ── */}
           {plate(
@@ -269,6 +330,8 @@ export default function FactoryMap({
           </div>
         </div>
 
+        {fullscreen && blueprintSrc && <FullscreenBlueprint />}
+
         {selected && (
           <SensorDetail sensorId={selected} sensor={sensorMap[selected]}
             health={healthMap[selected]} assets={assetsBySensor[selected]||[]}
@@ -284,11 +347,11 @@ export default function FactoryMap({
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <>
-      <ViewToggle />
-      <div style={{ width:"100%", overflowX:"auto" }}>
-        <svg viewBox={`0 0 ${svgW} ${svgH}`} width={svgW}
+      <Toolbar />
+      <div style={{ width:"100%", overflow:"auto", maxHeight:"calc(100vh - 260px)" }}>
+        <svg viewBox={`0 0 ${svgW} ${svgH}`} width={svgW * zoom}
           style={{ display:"block", background:"#0a1628",
-                   borderRadius:12, maxWidth:"100%" }}>
+                   borderRadius:12, transition:"width .15s" }}>
 
           {showImg && (
             <image href={blueprintSrc} x={0} y={0} width={svgW} height={svgH}
@@ -350,6 +413,8 @@ export default function FactoryMap({
           </text>
         </svg>
       </div>
+
+      {fullscreen && blueprintSrc && <FullscreenBlueprint />}
 
       {selected && (
         <SensorDetail sensorId={selected} sensor={sensorMap[selected]}

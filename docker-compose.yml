@@ -70,13 +70,11 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        REACT_APP_FACTORY_IMAGE: ""
-        REACT_APP_GRID_COLS:     "6"
-        REACT_APP_GRID_ROWS:     "5"
-        REACT_APP_SENSOR_COUNT:  "30"
-        REACT_APP_FACTORY_NAME:  "Factory A"
-        REACT_APP_API_URL:       "http://localhost:8000"
-        REACT_APP_WS_URL:        "ws://localhost:8000/ws"
+        # Only connection settings live here.
+        # Factory name, grid size and blueprint are configured at runtime in
+        # the Configuration page and stored in PostgreSQL.
+        REACT_APP_API_URL: "http://localhost:8000"
+        REACT_APP_WS_URL:  "ws://localhost:8000/ws"
     container_name: dt_frontend
     ports:
       - "3000:80"

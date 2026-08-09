@@ -30,6 +30,8 @@ class DigitalTwinEngine:
         self._client         = None
         self._loop           = None
         self._sensor_history : dict[str, list] = {}
+        self._known_sensors  : set[str] = set()
+        self._known_assets   : set[str] = set()
         self._movement_model = None
         self._monitor_model  = None
         self._evac_model     = None
@@ -50,6 +52,11 @@ class DigitalTwinEngine:
                 self._store.set_asset_meta(aid, meta["name"], meta["asset_type"])
         except Exception as e:
             logger.warning(f"Could not load asset names: {e}")
+        self._known_sensors = set(registry.all_sensors())
+        try:
+            self._known_assets = set(load_asset_meta().keys())
+        except Exception:
+            self._known_assets = set()
         self._watchdog = SensorWatchdog(self._store.health, self._on_alert)
         host = os.getenv("MQTT_HOST", "localhost")
         port = int(os.getenv("MQTT_PORT", 1883))
@@ -78,8 +85,13 @@ class DigitalTwinEngine:
             try:
                 payload        = json.loads(msg.payload.decode())
                 msg_type, parsed = route_message(msg.topic, payload)
-                coro = self._handle_env(parsed) if msg_type == "env" else self._handle_location(parsed)
-                asyncio.run_coroutine_threadsafe(coro, self._loop)
+                coro = (self._handle_env(parsed) if msg_type == "env"
+                        else self._handle_location(parsed))
+                fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+                # Log handler exceptions — previously these vanished silently
+                fut.add_done_callback(
+                    lambda f: f.exception() and
+                              logger.error(f"Handler error: {f.exception()}", exc_info=False))
             except Exception as e:
                 logger.error(f"MQTT message error: {e}", exc_info=True)
 
@@ -92,16 +104,24 @@ class DigitalTwinEngine:
     # ── Handlers ───────────────────────────────────────────────────────────────
     async def _handle_env(self, p: dict):
         sid, rt, val, ts = p["sensor_id"], p["reading_type"], p["value"], p["timestamp"]
+
+        # 1) Health first — a sensor that speaks is ONLINE regardless of the DB
         self._watchdog.on_message_received(sid)
+
+        # 2) In-memory state — this is what the dashboard renders
         sensor = self._store.update_sensor_reading(sid, rt, val, ts)
-        save_env_reading(sensor, rt, val)
+
+        # 3) Persistence is best-effort: never let a DB error stop the live feed
+        self._safe_db(lambda: self._ensure_sensor_row(sid, sensor.zone_id))
+        self._safe_db(lambda: save_env_reading(sensor, rt, val))
+
         hist = self._sensor_history.setdefault(sid, [])
         hist.append(sensor)
         if len(hist) > HISTORY_LIMIT: hist.pop(0)
         assets = self._store.assets_in_zone(sensor.zone_id or "")
         events = evaluate_scenarios(sensor, assets) + predict_critical_states(sensor, hist)
         for ev in events:
-            save_event(ev)
+            self._safe_db(lambda e=ev: save_event(e))
             await self._ws.push_alert(ev)
         if self._monitor_model:
             try:
@@ -124,16 +144,31 @@ class DigitalTwinEngine:
             "smoke":sensor.smoke,"env_status":sensor.env_status,
             "last_time_change":sensor.last_time_change.isoformat(),
         })
+
+        # Push health too — otherwise a sensor that was never seeded stays
+        # rendered as OFFLINE even though readings are arriving.
+        h = self._store.get_health(sid)
+        if h:
+            await self._ws.push_health_update({
+                "sensor_id": h.sensor_id, "zone_id": h.zone_id,
+                "status": h.status,
+                "last_heartbeat": h.last_heartbeat.isoformat() if h.last_heartbeat else None,
+                "consecutive_failures": h.consecutive_failures,
+            })
+
         await self._push_system_state()
 
     async def _handle_location(self, p: dict):
         aid, sid, ts = p["asset_id"], p["sensor_id"], p["timestamp"]
         self._watchdog.on_message_received(sid)
         asset = self._store.update_asset_location(aid, sid, ts)
-        if asset.has_changed_sensor(): save_location_event(asset)
+        self._safe_db(lambda: self._ensure_sensor_row(sid, asset.current_zone_id))
+        self._safe_db(lambda: self._ensure_asset_row(aid, asset.asset_type, asset.name))
+        if asset.has_changed_sensor():
+            self._safe_db(lambda: save_location_event(asset))
         violation = check_access(asset)
         if violation:
-            save_event(violation)
+            self._safe_db(lambda: save_event(violation))
             await self._ws.push_alert(violation)
         await self._ws.push_asset_update({
             "id":aid,"asset_type":asset.asset_type,
@@ -145,15 +180,71 @@ class DigitalTwinEngine:
         })
         await self._push_system_state()
 
+    # ── Persistence helpers ──────────────────────────────────────────────────
+
+    def _safe_db(self, fn):
+        """
+        Run a DB write, swallowing and logging any error.
+
+        PostgreSQL aborts an entire transaction after one failed statement, so
+        a single bad write would otherwise cascade and silently break the whole
+        ingestion pipeline. On failure we roll back so the next write can
+        succeed, and the live WebSocket feed continues either way.
+        """
+        try:
+            fn()
+        except Exception as e:
+            try:
+                from persistence.postgres import get_conn
+                get_conn().rollback()
+            except Exception:
+                pass
+            if not hasattr(self, "_db_err_count"):
+                self._db_err_count = 0
+            self._db_err_count += 1
+            if self._db_err_count <= 5 or self._db_err_count % 100 == 0:
+                logger.warning(f"DB write failed (#{self._db_err_count}): {e}")
+
+    def _ensure_sensor_row(self, sensor_id: str, zone_id=None):
+        """Insert a sensor discovered on MQTT but absent from the DB."""
+        if sensor_id in self._known_sensors:
+            return
+        from persistence.postgres import get_conn
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO sensors (sensor_id, zone_id, grid_row, grid_col)
+                VALUES (%s, %s, NULL, NULL)
+                ON CONFLICT (sensor_id) DO NOTHING
+            """, (sensor_id, zone_id))
+        conn.commit()
+        self._known_sensors.add(sensor_id)
+
+    def _ensure_asset_row(self, asset_id: str, asset_type: str, name=None):
+        """Insert an asset discovered on MQTT but absent from the DB."""
+        if asset_id in self._known_assets:
+            return
+        from persistence.postgres import get_conn
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO assets (asset_id, asset_type, name) VALUES (%s,%s,%s)
+                ON CONFLICT (asset_id) DO NOTHING
+            """, (asset_id, asset_type or "worker", name or asset_id))
+        conn.commit()
+        self._known_assets.add(asset_id)
+
     def _on_alert(self, alert: dict):
-        save_event(alert)
+        self._safe_db(lambda: save_event(alert))
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._ws.push_alert(alert), self._loop)
             asyncio.run_coroutine_threadsafe(self._ws.push_health_update(alert), self._loop)
 
     async def _push_system_state(self):
-        state = compute_system_state(self._store.all_assets(), self._store.all_sensors(), self._store.all_health())
-        save_system_snapshot(state)
+        state = compute_system_state(self._store.all_assets(),
+                                     self._store.all_sensors(),
+                                     self._store.all_health())
+        self._safe_db(lambda: save_system_snapshot(state))
         await self._ws.push_system_state(state.to_dict())
 
     def get_snapshot(self) -> dict:

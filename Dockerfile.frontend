@@ -4,24 +4,14 @@ WORKDIR /app
 
 COPY frontend/package.json .
 RUN npm install
-
 COPY frontend/ .
 
-# Build-time configuration (override in docker-compose.yml → build.args)
-ARG REACT_APP_FACTORY_IMAGE=""
-ARG REACT_APP_GRID_COLS=6
-ARG REACT_APP_GRID_ROWS=5
-ARG REACT_APP_SENSOR_COUNT=30
-ARG REACT_APP_FACTORY_NAME=Factory
+# Only connection settings are baked in at build time.
+# Factory layout (name, grid size, blueprint) is configured at runtime through
+# the Configuration page and persisted in PostgreSQL.
 ARG REACT_APP_API_URL=http://localhost:8000
 ARG REACT_APP_WS_URL=ws://localhost:8000/ws
-
-ENV REACT_APP_FACTORY_IMAGE=$REACT_APP_FACTORY_IMAGE \
-    REACT_APP_GRID_COLS=$REACT_APP_GRID_COLS \
-    REACT_APP_GRID_ROWS=$REACT_APP_GRID_ROWS \
-    REACT_APP_SENSOR_COUNT=$REACT_APP_SENSOR_COUNT \
-    REACT_APP_FACTORY_NAME=$REACT_APP_FACTORY_NAME \
-    REACT_APP_API_URL=$REACT_APP_API_URL \
+ENV REACT_APP_API_URL=$REACT_APP_API_URL \
     REACT_APP_WS_URL=$REACT_APP_WS_URL
 
 RUN npm run build

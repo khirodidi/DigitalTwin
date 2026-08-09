@@ -13,15 +13,17 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 export const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-const FALLBACK = {
-  factory_name:  process.env.REACT_APP_FACTORY_NAME || "Factory",
+// No layout defaults from env vars — the factory MUST be configured at runtime.
+// grid_cols / grid_rows of 0 mean "not configured yet".
+const UNCONFIGURED = {
+  factory_name:  "",
   blueprint_url: "",
-  grid_cols:     parseInt(process.env.REACT_APP_GRID_COLS, 10) || 6,
-  grid_rows:     parseInt(process.env.REACT_APP_GRID_ROWS, 10) || 5,
+  grid_cols:     0,
+  grid_rows:     0,
 };
 
 export function useConfig() {
-  const [config,  setConfig]  = useState(FALLBACK);
+  const [config,  setConfig]  = useState(UNCONFIGURED);
   const [sensors, setSensors] = useState([]);
   const [zones,   setZones]   = useState([]);
   const [loading, setLoading] = useState(true);
@@ -37,7 +39,7 @@ export function useConfig() {
         jobs.push(
           fetch(`${API}/api/config/factory`)
             .then(r => r.json())
-            .then(d => { if (mounted.current) setConfig({ ...FALLBACK, ...d }); })
+            .then(d => { if (mounted.current) setConfig({ ...UNCONFIGURED, ...d }); })
         );
       }
       if (section === "all" || section === "sensors" || section === "grid") {
@@ -77,9 +79,14 @@ export function useConfig() {
         : `${API}${config.blueprint_url}`)
     : null;
 
+  // The factory is usable only once grid size AND a blueprint exist
+  const configured = Boolean(
+    config.grid_cols > 0 && config.grid_rows > 0 && config.blueprint_url
+  );
+
   return {
     config, sensors, zones, loading, version, refresh,
-    blueprintSrc,
+    blueprintSrc, configured,
     cols: config.grid_cols,
     rows: config.grid_rows,
   };
