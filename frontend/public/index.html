@@ -3,16 +3,39 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#050c1a" />
     <title>Digital Twin — Factory Monitor</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #050c1a; overflow: hidden; }
-      ::-webkit-scrollbar { width: 4px; }
-      ::-webkit-scrollbar-track { background: #0d1829; }
-      ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+
+      html, body, #root {
+        height: 100%;
+        background: #050c1a;
+      }
+
+      /* The app manages its own scroll regions — no body-level scrollbar */
+      body { overflow: hidden; }
+
+      /* ── Scrollbars: thin, dark, visible on hover ── */
+      ::-webkit-scrollbar            { width: 9px; height: 9px; }
+      ::-webkit-scrollbar-track      { background: #0a1628; }
+      ::-webkit-scrollbar-thumb      {
+        background: #1e293b;
+        border-radius: 5px;
+        border: 2px solid #0a1628;
+      }
+      ::-webkit-scrollbar-thumb:hover { background: #334155; }
+      ::-webkit-scrollbar-corner      { background: #0a1628; }
+
+      /* Firefox */
+      * { scrollbar-width: thin; scrollbar-color: #1e293b #0a1628; }
+
+      /* Smooth momentum scrolling on touch devices */
+      [style*="overflow"] { -webkit-overflow-scrolling: touch; }
     </style>
   </head>
   <body>
+    <noscript>JavaScript is required to run the Digital Twin dashboard.</noscript>
     <div id="root"></div>
   </body>
 </html>

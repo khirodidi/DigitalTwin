@@ -54,6 +54,7 @@ services:
       HUMIDITY_WARNING:   "70.0"
     volumes:
       - model_store:/app/models
+      - blueprint_store:/app/static/blueprints
     ports:
       - "8000:8000"
     depends_on:
@@ -105,6 +106,7 @@ services:
 
 volumes:
   postgres_data:
+  blueprint_store:
   mosquitto_data:
   mosquitto_logs:
   model_store:

@@ -63,7 +63,8 @@ export default function TrajectoryMap({ workers, sensors }) {
   return (
     <div>
       {/* Controls */}
-      <div style={{ display:"flex", gap:12, marginBottom:20, alignItems:"flex-end", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", gap:12, marginBottom:20,
+        alignItems:"flex-end", flexWrap:"wrap" }}>
         <div>
           <div style={{ fontSize:10, color:"#64748b", marginBottom:4, letterSpacing:1 }}>SELECT ASSET</div>
           <select
@@ -123,9 +124,12 @@ export default function TrajectoryMap({ workers, sensors }) {
       )}
 
       {selected && path.length > 0 && (
-        <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
+        <div style={{ display:"flex", gap:24, flexWrap:"wrap",
+          alignItems:"flex-start" }}>
           {/* Grid SVG */}
-          <div style={{ background:"#0a1628", borderRadius:12, border:"1px solid #1e3a5f", flexShrink:0 }}>
+          <div style={{ background:"#0a1628", borderRadius:12,
+            border:"1px solid #1e3a5f", flexShrink:0,
+            overflowX:"auto", maxWidth:"100%" }}>
             <svg viewBox={`0 0 ${svgW} ${svgH}`} width={svgW} height={svgH}>
 
               {/* Grid lines */}
@@ -220,12 +224,13 @@ export default function TrajectoryMap({ workers, sensors }) {
           <div style={{ flex:1, minWidth:260 }}>
             <div style={{
               background:"#0d1829", border:"1px solid #1e293b",
-              borderRadius:10, overflow:"hidden", maxHeight:460, overflowY:"auto",
+              borderRadius:10, overflow:"auto", maxHeight:"min(460px, 60vh)",
             }}>
               <div style={{
                 padding:"8px 14px", background:"#0a1628",
                 fontSize:9, fontWeight:700, color:"#475569", letterSpacing:1,
                 display:"grid", gridTemplateColumns:"36px 60px 90px 1fr",
+                position:"sticky", top:0, zIndex:2,
               }}>
                 <span>#</span><span>SENSOR</span><span>STATUS</span><span>TIME</span>
               </div>

@@ -74,13 +74,17 @@ export default function ConfigPage({ onBack }) {
   // ── Styles ────────────────────────────────────────────────────────────────
   const S = {
     page: {
-      minHeight: "100vh", background: "#050c1a",
-      color: "#e2e8f0", fontFamily: "monospace",
+      // Fixed viewport height with an internal scroll area, so the header
+      // and tab bar stay visible while long content scrolls underneath.
+      height: "100vh", minHeight: 0,
+      display: "flex", flexDirection: "column",
+      background: "#050c1a", color: "#e2e8f0",
+      fontFamily: "monospace", overflow: "hidden",
     },
     header: {
-      display: "flex", alignItems: "center", gap: 16,
+      display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap",
       padding: "12px 24px", background: "#0d1829",
-      borderBottom: "1px solid #1e293b",
+      borderBottom: "1px solid #1e293b", flexShrink: 0,
     },
     backBtn: {
       padding: "5px 14px", background: "none",
@@ -92,15 +96,22 @@ export default function ConfigPage({ onBack }) {
     tabRow: {
       display: "flex", gap: 2, padding: "0 24px",
       background: "#0d1829", borderBottom: "1px solid #1e293b",
+      flexShrink: 0, overflowX: "auto", overflowY: "hidden",
     },
     tab: (active) => ({
       padding: "10px 18px", fontSize: 12, fontWeight: 600,
+      whiteSpace: "nowrap", flexShrink: 0,
       border: "none", background: "none", cursor: "pointer",
       fontFamily: "monospace", color: active ? "#a5b4fc" : "#475569",
       borderBottom: active ? "2px solid #6366f1" : "2px solid transparent",
       transition: "all .15s",
     }),
-    body: { padding: 24 },
+    body: {
+      // The only scrolling region on this page
+      flex: 1, minHeight: 0,
+      overflowY: "auto", overflowX: "auto",
+      padding: 24, paddingBottom: 60,
+    },
     toast: (type) => ({
       position: "fixed", bottom: 24, right: 24,
       padding: "10px 20px", borderRadius: 8, fontSize: 12,
@@ -131,7 +142,7 @@ export default function ConfigPage({ onBack }) {
 
       {/* Tab content */}
       <div style={S.body}>
-        {tab === "layout"     && <FactoryLayout zones={zones} sensors={sensors} apiCall={apiCall} />}
+        {tab === "layout"     && <FactoryLayout zones={zones} sensors={sensors} apiCall={apiCall} reload={reload} />}
         {tab === "sensors"    && <SensorEditor  sensors={sensors} zones={zones} apiCall={apiCall} />}
         {tab === "workers"    && <WorkerManager workers={workers} zones={zones}
                                                 sensors={sensors} apiCall={apiCall} reload={reload} />}

@@ -159,12 +159,14 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
       )}
 
       {/* Worker table */}
-      <div style={{ background:"#0d1829", border:"1px solid #1e293b", borderRadius:10, overflow:"hidden" }}>
+      <div style={{ background:"#0d1829", border:"1px solid #1e293b",
+        borderRadius:10, overflow:"auto", maxHeight:"calc(100vh - 320px)" }}>
         {/* Header */}
         <div style={{
           display:"grid", gridTemplateColumns:"80px 110px 1fr 1fr 120px",
           padding:"8px 16px", background:"#0a1628",
           fontSize:9, fontWeight:700, color:"#475569", letterSpacing:1,
+          position:"sticky", top:0, zIndex:2,
         }}>
           <span>ID</span><span>TYPE</span><span>NAME</span>
           <span>AUTHORISED FOR</span><span>ACTIONS</span>

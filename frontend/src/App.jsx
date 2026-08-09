@@ -1,35 +1,29 @@
 // =============================================================================
-// frontend/src/App.jsx  — UPDATED
+// App.jsx — root component
 //
-// Changes:
-//   1. Added `page` state to switch between "monitor" and "config"
-//   2. Added a ⚙️ Configuration button in the header
-//   3. Renders <ConfigPage> when page === "config"
-//   All monitoring logic is unchanged.
+// Key behaviour: the monitoring view reads layout from useConfig() at RUNTIME
+// and refreshes the moment a `config_updated` WebSocket event arrives, so
+// changes saved in the Configuration page appear instantly.
 // =============================================================================
 
 import { useReducer, useCallback, useEffect, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { useConfig }    from "./hooks/useConfig";
 import FactoryMap  from "./components/FactoryMap";
 import StatusBar   from "./components/StatusBar";
 import AlertPanel  from "./components/AlertPanel";
 import AssetList   from "./components/AssetList";
-import ConfigPage  from "./pages/ConfigPage";        // ← NEW
+import ConfigPage  from "./pages/ConfigPage";
 
-const FACTORY_NAME = process.env.REACT_APP_FACTORY_NAME || "Factory";
-
-// ── State reducer (unchanged) ─────────────────────────────────────────────────
 function reducer(state, action) {
   switch (action.type) {
     case "SNAPSHOT": {
       const p = action.payload;
-      return {
-        ...state,
+      return { ...state,
         systemState: p.system_state || state.systemState,
         sensors: Object.fromEntries((p.sensors || []).map(s => [s.sensor_id, s])),
         health:  Object.fromEntries((p.health  || []).map(h => [h.sensor_id, h])),
-        assets:  Object.fromEntries((p.assets  || []).map(a => [a.id, a])),
-      };
+        assets:  Object.fromEntries((p.assets  || []).map(a => [a.id, a])) };
     }
     case "SYSTEM_STATE":  return { ...state, systemState: action.payload };
     case "SENSOR_UPDATE": return { ...state, sensors: { ...state.sensors, [action.payload.sensor_id]: action.payload } };
@@ -42,88 +36,121 @@ function reducer(state, action) {
   }
 }
 
-const INITIAL = {
-  systemState: null, sensors: {}, health: {}, assets: {},
-  alerts: [], aiInsights: [], wsConnected: false,
-};
+const INITIAL = { systemState:null, sensors:{}, health:{}, assets:{},
+                  alerts:[], aiInsights:[], wsConnected:false };
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const [time,  setTime]  = useState(new Date());
-  const [page,  setPage]  = useState("monitor");   // ← NEW: "monitor" | "config"
+  const [page,  setPage]  = useState("monitor");
+  const [flash, setFlash] = useState(null);
+
+  // ── Runtime configuration (grid, blueprint, zones, sensor metadata) ───────
+  const { config, sensors: sensorConfig, zones, cols, rows,
+          blueprintSrc, refresh, loading } = useConfig();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
+  // ── WebSocket event router ────────────────────────────────────────────────
   const onEvent = useCallback((msg) => {
+    // Live config change → reload the affected part and flash a banner
+    if (msg.event === "config_updated") {
+      const section = msg.payload?.section || "all";
+      refresh(section);
+      setFlash(`Configuration updated (${section}) — view refreshed`);
+      setTimeout(() => setFlash(null), 3500);
+      return;
+    }
     const map = {
       snapshot:"SNAPSHOT", system_state:"SYSTEM_STATE",
       sensor_update:"SENSOR_UPDATE", health_update:"HEALTH_UPDATE",
       asset_update:"ASSET_UPDATE", alert:"ALERT", ai_insight:"AI_INSIGHT",
     };
     if (map[msg.event]) dispatch({ type: map[msg.event], payload: msg.payload });
-  }, []);
+  }, [refresh]);
 
   useWebSocket(onEvent);
 
-  // ── NEW: render config page ────────────────────────────────────────────────
+  // ── Config page — refresh monitoring data when returning ──────────────────
   if (page === "config") {
-    return <ConfigPage onBack={() => setPage("monitor")} />;
+    return <ConfigPage onBack={() => { refresh("all"); setPage("monitor"); }} />;
   }
 
-  // ── Monitoring page (unchanged except header button) ──────────────────────
   const sensorArr = Object.values(state.sensors);
   const healthArr = Object.values(state.health);
   const assetArr  = Object.values(state.assets);
 
   return (
-    <div style={{
-      display:"flex", flexDirection:"column", height:"100vh",
+    <div style={{ display:"flex", flexDirection:"column",
+      height:"100vh", minHeight:0,
       background:"#050c1a", color:"#e2e8f0",
-      fontFamily:"'IBM Plex Mono','Fira Code',monospace", overflow:"hidden",
-    }}>
+      fontFamily:"'IBM Plex Mono','Fira Code',monospace",
+      overflow:"hidden" }}>
+
       {/* Header */}
-      <div style={{
-        padding:"8px 20px", display:"flex", alignItems:"center", gap:16,
-        background:"#0d1829", borderBottom:"1px solid #1e293b", flexShrink:0,
-      }}>
+      <div style={{ padding:"8px 20px", display:"flex", alignItems:"center", gap:16,
+        background:"#0d1829", borderBottom:"1px solid #1e293b",
+        flexShrink:0, flexWrap:"wrap" }}>
         <div>
-          <div style={{ fontSize:8, color:"#6366f1", letterSpacing:3, textTransform:"uppercase" }}>
-            Digital Twin
+          <div style={{ fontSize:8, color:"#6366f1", letterSpacing:3,
+                        textTransform:"uppercase" }}>Digital Twin</div>
+          <div style={{ fontSize:15, fontWeight:700 }}>
+            {config.factory_name} — Live Monitor
           </div>
-          <div style={{ fontSize:15, fontWeight:700 }}>{FACTORY_NAME} — Live Monitor</div>
         </div>
 
-        {/* ── NEW: Configuration link ── */}
-        <button
-          onClick={() => setPage("config")}
-          style={{
-            marginLeft:"auto", padding:"6px 16px", fontSize:11, fontWeight:600,
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:12 }}>
+          <span style={{ fontSize:9, color:"#334155" }}>
+            {cols}×{rows} · {zones.length} zones
+            {blueprintSrc ? " · blueprint ✓" : ""}
+          </span>
+          <button onClick={() => setPage("config")} style={{
+            padding:"6px 16px", fontSize:11, fontWeight:600,
             border:"1px solid #6366f1", borderRadius:6,
             background:"#6366f122", color:"#a5b4fc",
-            cursor:"pointer", fontFamily:"monospace",
-            display:"flex", alignItems:"center", gap:6,
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = "#6366f144"}
-          onMouseLeave={e => e.currentTarget.style.background = "#6366f122"}
-        >
-          ⚙️  Configuration
-        </button>
-
-        <div style={{ fontSize:11, color:"#475569" }}>{time.toLocaleTimeString()}</div>
+            cursor:"pointer", fontFamily:"monospace" }}>
+            ⚙️  Configuration
+          </button>
+          <div style={{ fontSize:11, color:"#475569" }}>{time.toLocaleTimeString()}</div>
+        </div>
       </div>
 
       <StatusBar systemState={state.systemState} wsConnected={state.wsConnected} />
 
-      <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
-        <div style={{ width:200, borderRight:"1px solid #1e293b", overflowY:"auto", flexShrink:0 }}>
+      {/* Live config-change banner */}
+      {flash && (
+        <div style={{ padding:"6px 20px", background:"#052e16",
+          borderBottom:"1px solid #16a34a", fontSize:11, color:"#4ade80",
+          display:"flex", alignItems:"center", gap:8 }}>
+          <span>✓</span>{flash}
+        </div>
+      )}
+
+      <div style={{ flex:1, display:"flex", minHeight:0, overflow:"hidden" }}>
+        {/* Left sidebar — scrolls independently */}
+        <div style={{ width:200, flexShrink:0, minHeight:0,
+                      borderRight:"1px solid #1e293b",
+                      overflowY:"auto", overflowX:"hidden" }}>
           <AssetList assets={assetArr} />
         </div>
 
-        <div style={{ flex:1, overflowX:"auto", overflowY:"auto", padding:16 }}>
-          <FactoryMap sensors={sensorArr} health={healthArr} assets={assetArr} />
+        {/* Centre — scrolls both axes (wide grids scroll horizontally) */}
+        <div style={{ flex:1, minWidth:0, minHeight:0,
+                      overflowX:"auto", overflowY:"auto", padding:16 }}>
+          {loading ? (
+            <div style={{ padding:48, textAlign:"center", color:"#334155" }}>
+              Loading factory configuration…
+            </div>
+          ) : (
+            <FactoryMap
+              sensors={sensorArr} health={healthArr} assets={assetArr}
+              cols={cols} rows={rows}
+              blueprintSrc={blueprintSrc}
+              zones={zones} sensorConfig={sensorConfig} />
+          )}
 
           {state.systemState && (
             <div style={{ display:"flex", gap:8, marginTop:12, flexWrap:"wrap" }}>
@@ -134,10 +161,8 @@ export default function App() {
                 { l:"Total assets",    v:state.systemState.access?.total_assets,        c:"#93c5fd" },
                 { l:"Violations",      v:state.systemState.access?.violations,          c:"#f87171" },
               ].map(c => (
-                <div key={c.l} style={{
-                  padding:"6px 12px", borderRadius:6,
-                  background:"#0d1829", border:"1px solid #1e293b", minWidth:110,
-                }}>
+                <div key={c.l} style={{ padding:"6px 12px", borderRadius:6,
+                  background:"#0d1829", border:"1px solid #1e293b", minWidth:110 }}>
                   <div style={{ fontSize:20, fontWeight:700, color:c.c }}>{c.v ?? "—"}</div>
                   <div style={{ fontSize:8, color:"#475569" }}>{c.l}</div>
                 </div>
@@ -146,7 +171,9 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ width:290, borderLeft:"1px solid #1e293b", flexShrink:0 }}>
+        {/* Right sidebar — scrolls independently */}
+        <div style={{ width:290, flexShrink:0, minHeight:0,
+                      borderLeft:"1px solid #1e293b", display:"flex" }}>
           <AlertPanel alerts={state.alerts} aiInsights={state.aiInsights} />
         </div>
       </div>

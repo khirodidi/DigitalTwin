@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from engine.engine        import DigitalTwinEngine
@@ -37,6 +38,13 @@ app = FastAPI(title="Digital Twin — Factory Monitoring",
 app.add_middleware(CORSMiddleware,
     allow_origins=["http://localhost:3000","http://frontend:3000"],
     allow_methods=["*"], allow_headers=["*"])
+
+# ── Serve uploaded blueprint images at /static/blueprints/<file> ────────────
+import os
+from pathlib import Path
+STATIC_DIR = Path(os.getenv("STATIC_DIR", "/app/static"))
+(STATIC_DIR / "blueprints").mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 app.include_router(assets.router,  prefix="/api/assets",  tags=["Assets"])
 app.include_router(sensors.router, prefix="/api/sensors", tags=["Sensors"])

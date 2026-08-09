@@ -1,23 +1,53 @@
 # =============================================================================
 # api/routes/config.py
-# Configuration endpoints — factory layout, sensor metadata, worker management.
-# All settings are persisted to PostgreSQL so they survive restarts.
+# Configuration endpoints — factory layout, blueprint upload, sensors,
+# zones (defined by their sensors), workers, authorisations, trajectory.
+#
+# Every mutating endpoint broadcasts a `config_updated` WebSocket event so the
+# monitoring dashboard refreshes immediately without a page reload.
 # =============================================================================
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+import os, shutil, uuid
+from pathlib import Path
 from typing import Optional
+
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from pydantic import BaseModel
 import psycopg2.extras
+
 from persistence.postgres import get_conn
 
 router = APIRouter()
 
+# Where uploaded blueprints are stored inside the backend container.
+# Served publicly at /static/blueprints/<filename> (mounted in api/main.py).
+BLUEPRINT_DIR = Path(os.getenv("BLUEPRINT_DIR", "/app/static/blueprints"))
+BLUEPRINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── Pydantic models ──────────────────────────────────────────────────────────
+ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+MAX_BYTES   = 10 * 1024 * 1024   # 10 MB
+
+
+# ─── Broadcast helper ─────────────────────────────────────────────────────────
+
+async def _notify(section: str, detail: dict = None):
+    """
+    Push a config_updated event to all connected dashboards so the monitoring
+    view reloads the affected part of the configuration immediately.
+    """
+    try:
+        from api.main import ws_manager
+        await ws_manager.broadcast("config_updated",
+                                   {"section": section, **(detail or {})})
+    except Exception:
+        pass   # never let a broadcast failure break the API call
+
+
+# ─── Models ───────────────────────────────────────────────────────────────────
 
 class FactoryConfig(BaseModel):
     factory_name:  Optional[str] = None
-    blueprint_url: Optional[str] = None   # filename in frontend/public/
+    blueprint_url: Optional[str] = None
     grid_cols:     Optional[int] = None
     grid_rows:     Optional[int] = None
 
@@ -25,16 +55,16 @@ class ZoneBody(BaseModel):
     zone_id:     str
     name:        str
     description: Optional[str] = ""
-    sensor_ids:  list[str] = []           # sensors belonging to this zone
+    sensor_ids:  list[str] = []       # zone is DEFINED by these sensors
 
 class SensorConfigBody(BaseModel):
-    coverage_type: str = "passage"        # 'passage' | 'machine' | 'storage' | 'exit'
-    passable:      bool = True            # can workers physically walk through?
+    coverage_type: str  = "passage"
+    passable:      bool = True
     description:   Optional[str] = ""
 
 class WorkerBody(BaseModel):
     asset_id:   str
-    asset_type: str = "worker"            # 'worker' | 'forklift' | 'pallet'
+    asset_type: str = "worker"
     name:       str
 
 class AuthBody(BaseModel):
@@ -42,7 +72,9 @@ class AuthBody(BaseModel):
     allowed_sensors: list[str] = []
 
 
-# ─── Factory global config ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FACTORY CONFIG  (grid size lives here — read at runtime by the frontend)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/factory")
 def get_factory_config():
@@ -50,25 +82,149 @@ def get_factory_config():
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT key, value FROM factory_config")
         rows = cur.fetchall()
-    return {r["key"]: r["value"] for r in rows}
+    cfg = {r["key"]: r["value"] for r in rows}
+    # Coerce numeric fields so the frontend gets real numbers
+    return {
+        "factory_name":  cfg.get("factory_name", "Factory"),
+        "blueprint_url": cfg.get("blueprint_url", ""),
+        "grid_cols":     int(cfg.get("grid_cols", 6)),
+        "grid_rows":     int(cfg.get("grid_rows", 5)),
+    }
 
 
 @router.put("/factory")
-def update_factory_config(body: FactoryConfig):
-    conn = get_conn()
+async def update_factory_config(body: FactoryConfig):
     updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        return {"status": "no changes"}
+
+    # Validate grid bounds
+    for key in ("grid_cols", "grid_rows"):
+        if key in updates and not (1 <= int(updates[key]) <= 30):
+            raise HTTPException(400, f"{key} must be between 1 and 30")
+
+    conn = get_conn()
     with conn.cursor() as cur:
         for key, val in updates.items():
             cur.execute("""
-                INSERT INTO factory_config (key, value)
-                VALUES (%s, %s)
+                INSERT INTO factory_config (key, value) VALUES (%s, %s)
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """, (key, str(val)))
     conn.commit()
+
+    # If the grid changed, regenerate the sensor rows to match
+    if "grid_cols" in updates or "grid_rows" in updates:
+        cur_cfg = get_factory_config()
+        _regenerate_sensors(cur_cfg["grid_cols"], cur_cfg["grid_rows"])
+        await _notify("grid", {"cols": cur_cfg["grid_cols"], "rows": cur_cfg["grid_rows"]})
+    else:
+        await _notify("factory")
+
     return {"status": "updated", "keys": list(updates.keys())}
 
 
-# ─── Zone management ──────────────────────────────────────────────────────────
+def _regenerate_sensors(cols: int, rows: int):
+    """
+    Create sensor rows for an N×M grid.
+    Existing sensors keep their zone and config; extra sensors beyond the new
+    grid are deleted; missing ones are inserted.
+    """
+    conn = get_conn()
+    wanted = {f"S{r*cols + c + 1:02d}": (r, c)
+              for r in range(rows) for c in range(cols)}
+    with conn.cursor() as cur:
+        cur.execute("SELECT sensor_id FROM sensors")
+        existing = {r[0] for r in cur.fetchall()}
+
+        # Delete sensors that fall outside the new grid
+        stale = existing - wanted.keys()
+        if stale:
+            cur.execute("DELETE FROM sensors WHERE sensor_id = ANY(%s)", (list(stale),))
+
+        # Insert or update positions
+        for sid, (r, c) in wanted.items():
+            cur.execute("""
+                INSERT INTO sensors (sensor_id, zone_id, grid_row, grid_col)
+                VALUES (%s, NULL, %s, %s)
+                ON CONFLICT (sensor_id) DO UPDATE
+                  SET grid_row = EXCLUDED.grid_row, grid_col = EXCLUDED.grid_col
+            """, (sid, r, c))
+    conn.commit()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BLUEPRINT UPLOAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/factory/blueprint")
+async def upload_blueprint(file: UploadFile = File(...)):
+    """
+    Upload a factory floor plan image.
+    Stored in BLUEPRINT_DIR and served at /static/blueprints/<filename>.
+    The resulting URL is saved into factory_config.blueprint_url.
+    """
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(400,
+            f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXT))}")
+
+    # Unique filename so browsers don't serve a stale cached image
+    fname = f"blueprint_{uuid.uuid4().hex[:10]}{ext}"
+    dest  = BLUEPRINT_DIR / fname
+
+    size = 0
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 256):
+            size += len(chunk)
+            if size > MAX_BYTES:
+                out.close(); dest.unlink(missing_ok=True)
+                raise HTTPException(400, "File too large (max 10 MB)")
+            out.write(chunk)
+
+    url = f"/static/blueprints/{fname}"
+
+    # Remove the previously uploaded blueprint to avoid filling the volume
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM factory_config WHERE key='blueprint_url'")
+        row = cur.fetchone()
+        if row and row[0] and row[0].startswith("/static/blueprints/"):
+            old = BLUEPRINT_DIR / Path(row[0]).name
+            if old.exists() and old != dest:
+                old.unlink(missing_ok=True)
+
+        cur.execute("""
+            INSERT INTO factory_config (key, value) VALUES ('blueprint_url', %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """, (url,))
+    conn.commit()
+
+    await _notify("blueprint", {"blueprint_url": url})
+    return {"status": "uploaded", "blueprint_url": url,
+            "filename": fname, "size_bytes": size}
+
+
+@router.delete("/factory/blueprint")
+async def delete_blueprint():
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM factory_config WHERE key='blueprint_url'")
+        row = cur.fetchone()
+        if row and row[0] and row[0].startswith("/static/blueprints/"):
+            f = BLUEPRINT_DIR / Path(row[0]).name
+            f.unlink(missing_ok=True)
+        cur.execute("""
+            INSERT INTO factory_config (key, value) VALUES ('blueprint_url', '')
+            ON CONFLICT (key) DO UPDATE SET value = ''
+        """)
+    conn.commit()
+    await _notify("blueprint", {"blueprint_url": ""})
+    return {"status": "removed"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZONES — a zone IS its set of sensors
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/zones")
 def get_zones():
@@ -76,7 +232,10 @@ def get_zones():
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT z.zone_id, z.name, z.description,
-                   COALESCE(array_agg(s.sensor_id) FILTER (WHERE s.sensor_id IS NOT NULL), '{}') AS sensor_ids
+                   COALESCE(
+                     array_agg(s.sensor_id ORDER BY s.grid_row, s.grid_col)
+                     FILTER (WHERE s.sensor_id IS NOT NULL), '{}'
+                   ) AS sensor_ids
             FROM zones z
             LEFT JOIN sensors s ON s.zone_id = z.zone_id
             GROUP BY z.zone_id, z.name, z.description
@@ -86,38 +245,52 @@ def get_zones():
 
 
 @router.post("/zones")
-def create_zone(body: ZoneBody):
+async def save_zone(body: ZoneBody):
+    """
+    Create or update a zone AND set exactly which sensors belong to it.
+    Sensors previously in this zone but not in sensor_ids become unassigned.
+    """
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO zones (zone_id, name, description)
-            VALUES (%s, %s, %s)
+            INSERT INTO zones (zone_id, name, description) VALUES (%s,%s,%s)
             ON CONFLICT (zone_id) DO UPDATE
-              SET name=EXCLUDED.name, description=EXCLUDED.description
+              SET name = EXCLUDED.name, description = EXCLUDED.description
         """, (body.zone_id, body.name, body.description))
-        # Re-assign sensors to this zone
+
+        # Release sensors that are no longer part of this zone
+        cur.execute("""
+            UPDATE sensors SET zone_id = NULL
+            WHERE zone_id = %s AND NOT (sensor_id = ANY(%s))
+        """, (body.zone_id, body.sensor_ids or []))
+
+        # Claim the listed sensors (moves them out of any other zone)
         if body.sensor_ids:
             cur.execute("UPDATE sensors SET zone_id = %s WHERE sensor_id = ANY(%s)",
                         (body.zone_id, body.sensor_ids))
     conn.commit()
-    return {"status": "saved", "zone_id": body.zone_id}
+    await _notify("zones", {"zone_id": body.zone_id})
+    return {"status": "saved", "zone_id": body.zone_id,
+            "sensor_count": len(body.sensor_ids)}
 
 
 @router.delete("/zones/{zone_id}")
-def delete_zone(zone_id: str):
+async def delete_zone(zone_id: str):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("UPDATE sensors SET zone_id = NULL WHERE zone_id = %s", (zone_id,))
         cur.execute("DELETE FROM zones WHERE zone_id = %s", (zone_id,))
     conn.commit()
+    await _notify("zones", {"zone_id": zone_id, "deleted": True})
     return {"status": "deleted"}
 
 
-# ─── Sensor metadata ──────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SENSORS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/sensors")
 def get_sensors_config():
-    """Return all sensors with their coverage metadata."""
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
@@ -133,35 +306,38 @@ def get_sensors_config():
 
 
 @router.put("/sensors/{sensor_id}")
-def update_sensor_config(sensor_id: str, body: SensorConfigBody):
+async def update_sensor_config(sensor_id: str, body: SensorConfigBody):
+    if body.coverage_type not in ("passage", "machine", "storage", "exit"):
+        raise HTTPException(400, "coverage_type must be passage|machine|storage|exit")
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO sensor_config (sensor_id, coverage_type, passable, description)
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s,%s,%s,%s)
             ON CONFLICT (sensor_id) DO UPDATE
               SET coverage_type = EXCLUDED.coverage_type,
                   passable      = EXCLUDED.passable,
                   description   = EXCLUDED.description
         """, (sensor_id, body.coverage_type, body.passable, body.description))
     conn.commit()
+    await _notify("sensors", {"sensor_id": sensor_id})
     return {"status": "updated", "sensor_id": sensor_id}
 
 
-# ─── Worker / asset management ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  WORKERS + AUTHORISATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/workers")
 def get_workers():
-    """Return all assets with their authorisations."""
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT a.asset_id, a.asset_type, a.name,
                    COALESCE(
-                     json_agg(json_build_object(
-                       'type', au.allowed_type, 'id', au.allowed_id
-                     )) FILTER (WHERE au.allowed_id IS NOT NULL),
-                     '[]'
+                     json_agg(json_build_object('type', au.allowed_type,
+                                                'id',   au.allowed_id))
+                     FILTER (WHERE au.allowed_id IS NOT NULL), '[]'
                    ) AS authorisations
             FROM assets a
             LEFT JOIN authorisations au USING (asset_id)
@@ -172,36 +348,38 @@ def get_workers():
 
 
 @router.post("/workers")
-def create_worker(body: WorkerBody):
+async def create_worker(body: WorkerBody):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO assets (asset_id, asset_type, name)
-            VALUES (%s, %s, %s)
+            INSERT INTO assets (asset_id, asset_type, name) VALUES (%s,%s,%s)
             ON CONFLICT (asset_id) DO UPDATE
-              SET asset_type=EXCLUDED.asset_type, name=EXCLUDED.name
+              SET asset_type = EXCLUDED.asset_type, name = EXCLUDED.name
         """, (body.asset_id, body.asset_type, body.name))
     conn.commit()
-    return {"status": "created", "asset_id": body.asset_id}
+    await _notify("workers", {"asset_id": body.asset_id})
+    return {"status": "saved", "asset_id": body.asset_id}
 
 
 @router.put("/workers/{asset_id}")
-def update_worker(asset_id: str, body: WorkerBody):
+async def update_worker(asset_id: str, body: WorkerBody):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("UPDATE assets SET asset_type=%s, name=%s WHERE asset_id=%s",
                     (body.asset_type, body.name, asset_id))
     conn.commit()
+    await _notify("workers", {"asset_id": asset_id})
     return {"status": "updated"}
 
 
 @router.delete("/workers/{asset_id}")
-def delete_worker(asset_id: str):
+async def delete_worker(asset_id: str):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM authorisations WHERE asset_id=%s", (asset_id,))
         cur.execute("DELETE FROM assets WHERE asset_id=%s", (asset_id,))
     conn.commit()
+    await _notify("workers", {"asset_id": asset_id, "deleted": True})
     return {"status": "deleted"}
 
 
@@ -209,19 +387,19 @@ def delete_worker(asset_id: str):
 def get_authorisations(asset_id: str):
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT allowed_type, allowed_id
-            FROM authorisations WHERE asset_id=%s
-            ORDER BY allowed_type, allowed_id
-        """, (asset_id,))
+        cur.execute("""SELECT allowed_type, allowed_id FROM authorisations
+                       WHERE asset_id=%s ORDER BY allowed_type, allowed_id""",
+                    (asset_id,))
         rows = cur.fetchall()
-    zones   = [r["allowed_id"] for r in rows if r["allowed_type"] == "zone"]
-    sensors = [r["allowed_id"] for r in rows if r["allowed_type"] == "sensor"]
-    return {"asset_id": asset_id, "allowed_zones": zones, "allowed_sensors": sensors}
+    return {
+        "asset_id": asset_id,
+        "allowed_zones":   [r["allowed_id"] for r in rows if r["allowed_type"] == "zone"],
+        "allowed_sensors": [r["allowed_id"] for r in rows if r["allowed_type"] == "sensor"],
+    }
 
 
 @router.put("/workers/{asset_id}/authorisations")
-def set_authorisations(asset_id: str, body: AuthBody):
+async def set_authorisations(asset_id: str, body: AuthBody):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM authorisations WHERE asset_id=%s", (asset_id,))
@@ -230,28 +408,31 @@ def set_authorisations(asset_id: str, body: AuthBody):
         for s in body.allowed_sensors:
             cur.execute("INSERT INTO authorisations VALUES (%s,'sensor',%s)", (asset_id, s))
     conn.commit()
+
+    # Push new authorisations into the running engine so access status
+    # is recomputed on the very next location message.
+    try:
+        from api.main import engine
+        if engine and getattr(engine, "_store", None):
+            engine._store.set_asset_authorisations(
+                asset_id, set(body.allowed_sensors), set(body.allowed_zones))
+    except Exception:
+        pass
+
+    await _notify("authorisations", {"asset_id": asset_id})
     return {"status": "updated",
             "zones": len(body.allowed_zones),
             "sensors": len(body.allowed_sensors)}
 
 
-# ─── Worker trajectory ────────────────────────────────────────────────────────
-
 @router.get("/workers/{asset_id}/trajectory")
 def get_trajectory(asset_id: str, limit: int = 100):
-    """
-    Return the last N location events for a worker, ordered oldest→newest.
-    Used by TrajectoryMap to draw the path on the grid.
-    """
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT sensor_id, zone_id, access_status, timestamp
-            FROM location_events
-            WHERE asset_id = %s
-            ORDER BY timestamp DESC
-            LIMIT %s
+            FROM location_events WHERE asset_id=%s
+            ORDER BY timestamp DESC LIMIT %s
         """, (asset_id, limit))
         rows = cur.fetchall()
-    # Reverse so oldest first (for drawing path in order)
     return list(reversed(rows))

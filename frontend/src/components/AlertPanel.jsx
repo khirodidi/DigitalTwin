@@ -12,16 +12,21 @@ export default function AlertPanel({ alerts, aiInsights }) {
   ].sort((a,b)=>b._ts-a._ts).slice(0,80);
   const shown = filter==="all"?all : filter==="ai"?all.filter(a=>a._src==="ai") : all.filter(a=>a.level===filter);
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100%", background:"#0d1829", borderLeft:"1px solid #1e293b" }}>
+    <div style={{ display:"flex", flexDirection:"column",
+      height:"100%", width:"100%", minHeight:0,
+      background:"#0d1829", borderLeft:"1px solid #1e293b" }}>
       <div style={{ padding:"10px 14px", borderBottom:"1px solid #1e293b",
-        display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        flexShrink:0 }}>
         <span style={{ fontSize:10, fontWeight:700, color:"#94a3b8", letterSpacing:1 }}>ALERTS</span>
         <span style={{ fontSize:9, padding:"1px 7px", borderRadius:10,
           background:"#7f1d1d", color:"#fca5a5", fontWeight:700 }}>
           {all.filter(a=>a.level==="critical").length} critical
         </span>
       </div>
-      <div style={{ display:"flex", gap:2, padding:"6px 8px", borderBottom:"1px solid #1e293b" }}>
+      <div style={{ display:"flex", gap:2, padding:"6px 8px",
+        borderBottom:"1px solid #1e293b", flexShrink:0,
+        overflowX:"auto" }}>
         {["all","critical","warning","ai"].map(f=>(
           <button key={f} onClick={()=>setFilter(f)} style={{
             padding:"2px 8px", fontSize:8, fontWeight:600, borderRadius:3,
@@ -31,7 +36,7 @@ export default function AlertPanel({ alerts, aiInsights }) {
           }}>{f.toUpperCase()}</button>
         ))}
       </div>
-      <div style={{ flex:1, overflowY:"auto", padding:6 }}>
+      <div style={{ flex:1, minHeight:0, overflowY:"auto", padding:6 }}>
         {shown.length===0&&<div style={{ padding:20, textAlign:"center", color:"#334155", fontSize:11 }}>No alerts</div>}
         {shown.map((a,i)=>{
           const st=LEVEL[a.level]||LEVEL.info;

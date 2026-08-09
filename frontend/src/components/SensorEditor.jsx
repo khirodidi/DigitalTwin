@@ -84,7 +84,8 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
       </div>
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
+      <div style={{ display:"flex", gap:8, marginBottom:16, alignItems:"center",
+        flexWrap:"wrap" }}>
         <span style={{ fontSize: 11, color: "#64748b" }}>Filter by zone:</span>
         {[{ zone_id:"all", name:"All" }, ...zones].map(z => (
           <button key={z.zone_id}
@@ -108,7 +109,8 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
       </div>
 
       {/* Sensor table */}
-      <div style={{ background: "#0d1829", border: "1px solid #1e293b", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ background:"#0d1829", border:"1px solid #1e293b",
+        borderRadius:10, overflow:"auto", maxHeight:"calc(100vh - 300px)" }}>
         {/* Header */}
         <div style={{
           display: "grid",
@@ -116,6 +118,7 @@ export default function SensorEditor({ sensors, zones, apiCall }) {
           gap: 0, padding: "8px 12px",
           background: "#0a1628", fontSize: 9, fontWeight: 700,
           color: "#475569", letterSpacing: 1,
+          position:"sticky", top:0, zIndex:2,
         }}>
           <span>ID</span><span>ZONE</span><span>COVERAGE TYPE</span>
           <span>PASSABLE</span><span>DESCRIPTION</span><span></span>

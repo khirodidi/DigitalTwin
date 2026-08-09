@@ -2,12 +2,15 @@ const ICON = { worker:"👷", forklift:"🚜", pallet:"📦", object:"📍" };
 const ACC  = { authorised:"#4ade80", violation:"#f87171", unknown:"#fbbf24" };
 export default function AssetList({ assets }) {
   return (
-    <div style={{ background:"#0d1829", fontFamily:"monospace" }}>
+    <div style={{ background:"#0d1829", fontFamily:"monospace",
+                  display:"flex", flexDirection:"column",
+                  height:"100%", minHeight:0 }}>
       <div style={{ padding:"9px 12px", borderBottom:"1px solid #1e293b",
-        fontSize:9, fontWeight:700, color:"#64748b", letterSpacing:1 }}>
+        fontSize:9, fontWeight:700, color:"#64748b", letterSpacing:1,
+        flexShrink:0, position:"sticky", top:0, background:"#0d1829", zIndex:1 }}>
         ASSETS ({(assets||[]).length})
       </div>
-      <div style={{ maxHeight:"calc(100vh - 120px)", overflowY:"auto" }}>
+      <div style={{ flex:1, minHeight:0, overflowY:"auto" }}>
         {(assets||[]).map(a=>(
           <div key={a.id} style={{ padding:"6px 12px", borderBottom:"1px solid #0f172a",
             display:"flex", alignItems:"center", gap:8 }}>

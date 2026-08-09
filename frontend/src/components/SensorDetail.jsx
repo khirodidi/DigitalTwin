@@ -52,7 +52,7 @@ function AssetGroup({ type, assets }) {
   );
 }
 
-export default function SensorDetail({ sensorId, sensor, health, assets, onClose }) {
+export default function SensorDetail({ sensorId, sensor, health, assets, onClose, config, zone }) {
   if (!sensorId) return null;
 
   const S   = sensor || {};
@@ -86,7 +86,7 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
       <div style={{
         position:"fixed", top:"50%", left:"50%",
         transform:"translate(-50%,-50%)",
-        width:340, maxHeight:"80vh",
+        width:340, maxWidth:"92vw", maxHeight:"85vh", minHeight:0,
         background:"#0d1829",
         border:`1.5px solid ${col.border}`,
         borderRadius:12,
@@ -105,8 +105,17 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
           <div>
             <div style={{ fontSize:14, fontWeight:700, color:col.text }}>{sensorId}</div>
             <div style={{ fontSize:10, color:"#64748b", marginTop:1 }}>
-              Zone: {S.zone_id || "—"}
+              Zone: {zone?.name || S.zone_id || "unassigned"}
+              {config?.coverage_type && ` · ${config.coverage_type}`}
+              {config?.passable === false && (
+                <span style={{ color:"#f87171" }}> · not passable</span>
+              )}
             </div>
+            {config?.description && (
+              <div style={{ fontSize:9, color:"#475569", marginTop:2 }}>
+                {config.description}
+              </div>
+            )}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <span style={{
@@ -157,7 +166,7 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
         </div>
 
         {/* Asset list */}
-        <div style={{ flex:1, overflowY:"auto", padding:"12px 16px" }}>
+        <div style={{ flex:1, minHeight:0, overflowY:"auto", padding:"12px 16px" }}>
           <div style={{
             fontSize:9, fontWeight:700, color:"#475569",
             letterSpacing:1.5, marginBottom:10,
