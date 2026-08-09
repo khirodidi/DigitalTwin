@@ -14,7 +14,12 @@ ARG REACT_APP_WS_URL=ws://localhost:8000/ws
 ENV REACT_APP_API_URL=$REACT_APP_API_URL \
     REACT_APP_WS_URL=$REACT_APP_WS_URL
 
-RUN npm run build
+# Remove any build directory that slipped in, then compile fresh
+RUN rm -rf build && npm run build
+
+# Fail the image build loudly if the bundle is missing, instead of shipping
+# an empty web root that serves a blank page.
+RUN test -f build/index.html && ls build/static/js/*.js >/dev/null
 
 # ── Serve stage ───────────────────────────────────────────────────────────────
 FROM nginx:alpine

@@ -1,0 +1,17 @@
+# Never copy local build artefacts into the image — a stale frontend/build
+# directory would be served instead of the freshly compiled one, producing
+# an index.html that references bundle hashes which no longer exist.
+frontend/build/
+frontend/node_modules/
+node_modules/
+**/__pycache__/
+*.pyc
+.git/
+.venv/
+venv/
+models/*.pt
+models/*.joblib
+mlruns/
+data/
+*.log
+.DS_Store
