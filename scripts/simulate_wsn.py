@@ -112,12 +112,14 @@ class FactoryConfig:
         if wor:
             for w in wor:
                 auth = w.get("authorisations") or []
+                traj = w.get("default_trajectory") or []
                 self.assets.append({
-                    "asset_id":        w["asset_id"],
-                    "asset_type":      w.get("asset_type", "worker"),
-                    "name":            w.get("name", w["asset_id"]),
-                    "allowed_zones":   [a["id"] for a in auth if a.get("type") == "zone"],
-                    "allowed_sensors": [a["id"] for a in auth if a.get("type") == "sensor"],
+                    "asset_id":           w["asset_id"],
+                    "asset_type":         w.get("asset_type", "worker"),
+                    "name":               w.get("name", w["asset_id"]),
+                    "allowed_zones":      [a["id"] for a in auth if a.get("type") == "zone"],
+                    "allowed_sensors":    [a["id"] for a in auth if a.get("type") == "sensor"],
+                    "default_trajectory": list(traj),
                 })
             counts = {}
             for a in self.assets:
@@ -258,13 +260,15 @@ class Asset:
     DWELL = {"machine": (5, 12), "storage": (3, 6),
              "passage": (1, 2),  "exit":    (1, 2)}
 
-    # Coverage types each asset type refuses to enter
-    AVOID = {"worker": [], "forklift": ["machine"], "pallet": ["machine", "exit"]}
+    # Coverage types each asset type refuses to enter.
+    # Every sensor defaults to 'passage', and EXIT cells are passable by all
+    # asset types (workers and pallets included) — an exit is a doorway.
+    AVOID = {"worker": [], "forklift": ["machine"], "pallet": ["machine"]}
 
     # Preferred waypoint coverage types — the trajectory is built from these
-    PREFER = {"worker":   ["machine", "storage", "passage"],
+    PREFER = {"worker":   ["machine", "storage", "passage", "exit"],
               "forklift": ["storage", "exit", "passage"],
-              "pallet":   ["storage"]}
+              "pallet":   ["storage", "passage"]}
 
     # Trajectory style and how many ticks between advancing one cell
     STYLE = {"worker": "patrol", "forklift": "circuit", "pallet": "static"}
@@ -277,13 +281,27 @@ class Asset:
         self.name       = spec["name"]
         self.zones      = spec["allowed_zones"]
         self.sensors_ok = spec["allowed_sensors"]
+        self.configured = [s for s in (spec.get("default_trajectory") or [])
+                           if s in cfg.sensors and cfg.passable(s)]
         self.viol_rate  = violation_rate
         self.avoid      = self.AVOID.get(self.type, [])
         self.style      = self.STYLE.get(self.type, "patrol")
         self.speed      = self.SPEED.get(self.type, 1)
 
         self.home       = self._home_cells()
-        self.waypoints  = self._build_trajectory(n_waypoints)
+        # A trajectory configured in the dashboard always wins over a generated one
+        if len(self.configured) >= 2:
+            self.waypoints = self.configured
+            # Guarantee the route is walkable: include its cells in the home area
+            self.home = sorted(set(self.home) | set(self.configured))
+            self.source = "configured"
+        elif len(self.configured) == 1:
+            self.waypoints = self.configured
+            self.home = sorted(set(self.home) | set(self.configured))
+            self.source = "configured"
+        else:
+            self.waypoints = self._build_trajectory(n_waypoints)
+            self.source = "generated"
         self.wp_index   = 0
         self.leg        = []      # remaining cells on the current leg
         self.direction  = 1       # for patrol reversal
@@ -459,8 +477,8 @@ class Asset:
 
     def describe(self) -> str:
         wp = " → ".join(self.waypoints[:6]) + ("…" if len(self.waypoints) > 6 else "")
-        return (f"{self.id:5} {self.type:9} {self.name[:18]:18} "
-                f"{self.style:7} home={len(self.home):3} "
+        return (f"{self.name[:20]:20} {self.type:9} "
+                f"{self.source:10} {self.style:7} home={len(self.home):3} "
                 f"wp={len(self.waypoints)}  [{wp}]")
 
 
@@ -479,15 +497,15 @@ def build_fallback(cfg, args):
     for i in range(1, args.workers + 1):
         cfg.assets.append({"asset_id": f"W{i:02d}", "asset_type": "worker",
                            "name": f"Worker {i}", "allowed_zones": [],
-                           "allowed_sensors": []})
+                           "allowed_sensors": [], "default_trajectory": []})
     for i in range(1, args.forklifts + 1):
         cfg.assets.append({"asset_id": f"F{i:02d}", "asset_type": "forklift",
                            "name": f"Forklift {i}", "allowed_zones": [],
-                           "allowed_sensors": []})
+                           "allowed_sensors": [], "default_trajectory": []})
     for i in range(1, args.pallets + 1):
         cfg.assets.append({"asset_id": f"P{i:02d}", "asset_type": "pallet",
                            "name": f"Pallet {i}", "allowed_zones": [],
-                           "allowed_sensors": []})
+                           "allowed_sensors": [], "default_trajectory": []})
 
 
 def run(args):
@@ -521,7 +539,8 @@ def run(args):
           f"{sum(1 for s in sids if not cfg.passable(s))} blocked)")
     print(f"  Fire at {fire_sid} ({cfg.ctype(fire_sid)}) after {args.fire_delay}s"
           f"  ·  violation rate {args.violation_rate:.0%}")
-    print(f"\n  Trajectories ({args.waypoints} waypoints target):")
+    print(f"\n  Trajectories  (configured routes take priority over generated):")
+    print(f"    {'NAME':20} {'TYPE':9} {'SOURCE':10} {'STYLE':7} HOME  WAYPOINTS")
     for a in assets:
         print("    " + a.describe())
     print(f"\n  Publishing every {args.interval}s → {args.host}:{args.port}")
@@ -565,9 +584,10 @@ def run(args):
 
     except KeyboardInterrupt:
         print(f"\n\n  Stopped after {tick} ticks ({int(time.time() - start)}s)")
-        print(f"  {'ASSET':6} {'TYPE':9} {'MOVES':>6} {'VIOL':>5}  POSITION")
+        print(f"  {'NAME':20} {'TYPE':9} {'MOVES':>6} {'VIOL':>5}  POSITION")
         for a in assets:
-            print(f"  {a.id:6} {a.type:9} {a.moves:>6} {a.violations:>5}  {a.sensor}")
+            print(f"  {a.name[:20]:20} {a.type:9} {a.moves:>6} "
+                  f"{a.violations:>5}  {a.sensor}")
     finally:
         client.loop_stop()
         client.disconnect()

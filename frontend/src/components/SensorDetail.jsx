@@ -34,7 +34,7 @@ function AssetGroup({ type, assets }) {
             border:"0.5px solid #1e293b",
           }}>
             <span style={{ fontSize:11, fontFamily:"monospace", color:"#e2e8f0" }}>
-              {style.icon} {a.id}
+              {style.icon} {a.name || a.id}
             </span>
             <span style={{
               fontSize:9, fontWeight:700, fontFamily:"monospace",
@@ -106,6 +106,7 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
             <div style={{ fontSize:14, fontWeight:700, color:col.text }}>{sensorId}</div>
             <div style={{ fontSize:10, color:"#64748b", marginTop:1 }}>
               Zone: {zone?.name || S.zone_id || "unassigned"}
+              {zone?.sensorCount ? ` (${zone.sensorCount} sensors)` : ""}
               {config?.coverage_type && ` · ${config.coverage_type}`}
               {config?.passable === false && (
                 <span style={{ color:"#f87171" }}> · not passable</span>

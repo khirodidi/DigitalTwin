@@ -1,296 +1,362 @@
 // =============================================================================
-// frontend/src/components/WorkerManager.jsx
-// Tab 3 of ConfigPage:
-//   - Table of all workers / forklifts / pallets
-//   - Add / edit / delete assets
-//   - Per-asset authorization editor: tick zones and individual sensors
+// WorkerManager.jsx — Configuration Tab 3
+//   • Add / edit / delete assets (shown by NAME, id secondary)
+//   • ZONE authorisation list  — tick the zones the asset may enter
+//   • SENSOR authorisation list — tick individual cells
+//   • DEFAULT TRAJECTORY       — ordered sensors the asset works at
+//   • "Authorise all" rescue button to clear a violation storm
 // =============================================================================
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
-const TYPES = ["worker","forklift","pallet"];
-const TYPE_ICON = { worker:"👷", forklift:"🚜", pallet:"📦" };
+const API   = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const TYPES = ["worker", "forklift", "pallet"];
+const ICON  = { worker: "👷", forklift: "🚜", pallet: "📦" };
+const PALETTE = ["#14b8a6","#3b82f6","#8b5cf6","#f59e0b",
+                 "#ec4899","#ef4444","#22c55e","#f97316"];
 
-const input = {
-  background:"#0d1829", border:"1px solid #334155", borderRadius:6,
-  color:"#e2e8f0", padding:"6px 10px", fontSize:12, fontFamily:"monospace",
-  boxSizing:"border-box",
-};
-const btn = (col="#6366f1",sm=false) => ({
-  padding: sm ? "3px 10px" : "6px 14px",
-  fontSize: sm ? 10 : 12, fontWeight:600, fontFamily:"monospace",
-  border:`1px solid ${col}`, borderRadius:6,
-  background:`${col}22`, color:col, cursor:"pointer",
-});
-const labelS = { fontSize:10, color:"#64748b", marginBottom:3, display:"block", letterSpacing:1 };
-
-const ZONE_COLORS = ["#14b8a6","#3b82f6","#8b5cf6","#f59e0b","#ec4899","#ef4444","#22c55e","#f97316"];
+const input = { background:"#0d1829", border:"1px solid #334155", borderRadius:6,
+  color:"#e2e8f0", padding:"7px 10px", fontSize:12, fontFamily:"monospace",
+  width:"100%", boxSizing:"border-box" };
+const btn = (c="#6366f1", sm=false) => ({
+  padding: sm?"4px 10px":"7px 15px", fontSize: sm?10:11, fontWeight:600,
+  border:`1px solid ${c}`, borderRadius:6, background:`${c}22`, color:c,
+  cursor:"pointer", fontFamily:"monospace", whiteSpace:"nowrap" });
+const lbl = { fontSize:10, color:"#64748b", marginBottom:4, display:"block", letterSpacing:1 };
 
 export default function WorkerManager({ workers, zones, sensors, apiCall, reload }) {
-  const [form,      setForm]    = useState({ asset_id:"", asset_type:"worker", name:"" });
-  const [editing,   setEditing] = useState(null);   // asset_id being auth-edited
-  const [auth,      setAuth]    = useState({ allowed_zones:[], allowed_sensors:[] });
-  const [showForm,  setShowForm]= useState(false);
-  const [filterType,setFT]      = useState("all");
+  const [form,     setForm]     = useState({ asset_id:"", asset_type:"worker", name:"" });
+  const [showForm, setShowForm] = useState(false);
+  const [openId,   setOpenId]   = useState(null);
+  const [auth,     setAuth]     = useState({ allowed_zones:[], allowed_sensors:[] });
+  const [traj,     setTraj]     = useState([]);
+  const [filter,   setFilter]   = useState("all");
 
-  const shown = filterType === "all" ? workers : workers.filter(w => w.asset_type === filterType);
+  const cols = Math.max(...sensors.map(s => (s.grid_col ?? 0) + 1), 1);
+  const zoneColor = zid => PALETTE[Math.max(0, zones.findIndex(z=>z.zone_id===zid)) % PALETTE.length];
+  const sensorZone = {};
+  zones.forEach(z => (z.sensor_ids||[]).forEach(s => { sensorZone[s] = z.zone_id; }));
 
-  // ── Add / update worker ────────────────────────────────────────────────────
+  const shown = filter === "all" ? workers : workers.filter(w => w.asset_type === filter);
+  const noAuth = workers.filter(w => !(w.authorisations||[]).length);
+
+  // ── Open the editor for one asset ────────────────────────────────────────
+  function open(w) {
+    const a = w.authorisations || [];
+    setAuth({
+      allowed_zones:   a.filter(x => x.type === "zone").map(x => x.id),
+      allowed_sensors: a.filter(x => x.type === "sensor").map(x => x.id),
+    });
+    setTraj(Array.isArray(w.default_trajectory) ? [...w.default_trajectory] : []);
+    setOpenId(w.asset_id);
+  }
+
+  const toggleZone   = z => setAuth(p => ({ ...p,
+    allowed_zones: p.allowed_zones.includes(z)
+      ? p.allowed_zones.filter(x=>x!==z) : [...p.allowed_zones, z] }));
+  const toggleSensor = s => setAuth(p => ({ ...p,
+    allowed_sensors: p.allowed_sensors.includes(s)
+      ? p.allowed_sensors.filter(x=>x!==s) : [...p.allowed_sensors, s] }));
+
+  // Trajectory is ORDERED — clicking appends, clicking again removes
+  const toggleTraj = s => setTraj(p =>
+    p.includes(s) ? p.filter(x=>x!==s) : [...p, s]);
+
+  async function saveAuth(w) {
+    await apiCall(`/api/config/workers/${w.asset_id}/authorisations`, "PUT", auth);
+    await apiCall(`/api/config/workers/${w.asset_id}`, "PUT", {
+      asset_id: w.asset_id, asset_type: w.asset_type, name: w.name,
+      default_trajectory: traj,
+    });
+    setOpenId(null);
+  }
+
   async function saveWorker() {
     if (!form.asset_id.trim() || !form.name.trim()) return;
-    await apiCall("/api/config/workers", "POST", form);
+    await apiCall("/api/config/workers", "POST", { ...form, default_trajectory: [] });
     setForm({ asset_id:"", asset_type:"worker", name:"" });
     setShowForm(false);
   }
 
-  async function deleteWorker(id) {
-    if (!window.confirm(`Delete ${id}? This also removes all their authorisations.`)) return;
-    await apiCall(`/api/config/workers/${id}`, "DELETE");
+  async function delWorker(w) {
+    if (!window.confirm(`Delete ${w.name} (${w.asset_id})?`)) return;
+    await apiCall(`/api/config/workers/${w.asset_id}`, "DELETE");
   }
 
-  // ── Open auth editor for a worker ─────────────────────────────────────────
-  function openAuth(w) {
-    const auths = w.authorisations || [];
-    setAuth({
-      allowed_zones:   auths.filter(a => a.type === "zone").map(a => a.id),
-      allowed_sensors: auths.filter(a => a.type === "sensor").map(a => a.id),
+  async function authoriseAll() {
+    if (!zones.length) { alert("Define zones first in the Factory Layout tab."); return; }
+    if (!window.confirm(
+      `Grant every asset access to all ${zones.length} zones?\n\n` +
+      `This clears access-violation alerts caused by assets that have no ` +
+      `authorisations. You can then restrict individuals as needed.`)) return;
+    await apiCall("/api/config/workers/bulk-authorise", "POST", {
+      asset_ids: "all", allowed_zones: zones.map(z=>z.zone_id),
+      allowed_sensors: [], mode: "replace",
     });
-    setEditing(w.asset_id);
   }
 
-  function toggleZone(zid) {
-    setAuth(p => ({
-      ...p,
-      allowed_zones: p.allowed_zones.includes(zid)
-        ? p.allowed_zones.filter(z => z !== zid)
-        : [...p.allowed_zones, zid],
-    }));
-  }
-
-  function toggleSensor(sid) {
-    setAuth(p => ({
-      ...p,
-      allowed_sensors: p.allowed_sensors.includes(sid)
-        ? p.allowed_sensors.filter(s => s !== sid)
-        : [...p.allowed_sensors, sid],
-    }));
-  }
-
-  async function saveAuth() {
-    await apiCall(`/api/config/workers/${editing}/authorisations`, "PUT", auth);
-    setEditing(null);
-  }
-
-  function authorisationSummary(w) {
-    const auths = w.authorisations || [];
-    const zones   = auths.filter(a => a.type === "zone").map(a => a.id);
-    const sensorL = auths.filter(a => a.type === "sensor").map(a => a.id);
-    if (!zones.length && !sensorL.length) return <span style={{color:"#475569",fontSize:10}}>no access</span>;
+  // Compact grid picker used for both sensor auth and trajectory
+  function GridPicker({ selected, onToggle, accent, ordered }) {
+    const ordered_ = ordered || [];
     return (
-      <span style={{fontSize:10}}>
-        {zones.map(z => <span key={z} style={{
-          marginRight:4, padding:"1px 6px", borderRadius:3,
-          background:"#6366f122", color:"#a5b4fc", border:"1px solid #6366f144"
-        }}>{z}</span>)}
-        {sensorL.map(s => <span key={s} style={{
-          marginRight:4, padding:"1px 6px", borderRadius:3,
-          background:"#14b8a622", color:"#5eead4", border:"1px solid #14b8a644"
-        }}>{s}</span>)}
-      </span>
+      <div style={{ overflowX:"auto", maxWidth:"100%", paddingBottom:4 }}>
+        <div style={{ display:"grid",
+          gridTemplateColumns:`repeat(${cols}, 40px)`, gap:3 }}>
+          {sensors.map(s => {
+            const sid = s.sensor_id;
+            const on  = selected.includes(sid);
+            const idx = ordered_.indexOf(sid);
+            const zc  = sensorZone[sid] ? zoneColor(sensorZone[sid]) : "#334155";
+            return (
+              <button key={sid} onClick={() => onToggle(sid)}
+                title={`${sid}${sensorZone[sid] ? ` · ${sensorZone[sid]}` : ""}` +
+                       `${s.coverage_type ? ` · ${s.coverage_type}` : ""}` +
+                       `${s.passable === false ? " · NOT PASSABLE" : ""}`}
+                style={{
+                  height:34, fontSize:9, fontWeight:700, cursor:"pointer",
+                  fontFamily:"monospace", borderRadius:4, position:"relative",
+                  border:`1px solid ${on ? accent : zc + "55"}`,
+                  background: on ? accent+"38" : "#0a1628",
+                  color: on ? accent : "#475569",
+                  opacity: s.passable === false ? 0.45 : 1,
+                }}>
+                {sid.replace("S","")}
+                {idx >= 0 && (
+                  <span style={{ position:"absolute", top:-5, right:-4,
+                    background:accent, color:"#050c1a", borderRadius:"50%",
+                    width:13, height:13, fontSize:8, lineHeight:"13px" }}>
+                    {idx+1}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
     );
   }
 
   return (
     <div>
-      {/* Controls */}
-      <div style={{ display:"flex", gap:10, marginBottom:16, alignItems:"center" }}>
-        <div style={{ display:"flex", gap:4 }}>
-          {["all","worker","forklift","pallet"].map(t => (
-            <button key={t} onClick={() => setFT(t)} style={{
-              ...btn(filterType===t ? "#6366f1" : "#334155", true),
-              background: filterType===t ? "#6366f133" : "transparent",
-            }}>
-              {t==="all" ? "All" : `${TYPE_ICON[t]} ${t}s`}
-            </button>
-          ))}
+      {/* ── Violation warning banner ── */}
+      {noAuth.length > 0 && (
+        <div style={{ padding:"12px 16px", marginBottom:14, borderRadius:8,
+          background:"#7f1d1d33", border:"1px solid #ef4444",
+          display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+          <span style={{ fontSize:18 }}>⚠</span>
+          <div style={{ flex:1, minWidth:220 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:"#fca5a5" }}>
+              {noAuth.length} asset(s) have no authorisations
+            </div>
+            <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>
+              Every location they report counts as a VIOLATION, which forces the
+              system status to CRITICAL. Grant zone access below, or use the
+              rescue button.
+            </div>
+          </div>
+          <button style={btn("#22c55e")} onClick={authoriseAll}>
+            Authorise all assets for all zones
+          </button>
         </div>
+      )}
+
+      {/* ── Controls ── */}
+      <div style={{ display:"flex", gap:8, marginBottom:14,
+        alignItems:"center", flexWrap:"wrap" }}>
+        {["all","worker","forklift","pallet"].map(t => (
+          <button key={t} onClick={() => setFilter(t)}
+            style={{ ...btn(filter===t ? "#6366f1" : "#334155", true),
+                     background: filter===t ? "#6366f133" : "transparent" }}>
+            {t === "all" ? "All" : `${ICON[t]} ${t}s`}
+          </button>
+        ))}
         <button style={{ ...btn("#22c55e"), marginLeft:"auto" }}
-          onClick={() => setShowForm(p => !p)}>
+          onClick={() => setShowForm(p=>!p)}>
           {showForm ? "✕ Cancel" : "+ Add asset"}
         </button>
       </div>
 
-      {/* Add form */}
+      {/* ── Add form ── */}
       {showForm && (
-        <div style={{
-          background:"#0d1829", border:"1px solid #334155", borderRadius:10,
-          padding:16, marginBottom:16,
-        }}>
-          <div style={{ fontSize:12, fontWeight:700, color:"#22c55e", marginBottom:12 }}>
-            New asset
-          </div>
-          <div style={{ display:"grid", gridTemplateColumns:"120px 130px 1fr auto", gap:10 }}>
-            <div>
-              <span style={labelS}>ID (matches tag)</span>
-              <input style={{ ...input, width:"100%" }}
-                placeholder="W06"
-                value={form.asset_id}
-                onChange={e => setForm(p => ({ ...p, asset_id: e.target.value.trim() }))} />
-            </div>
-            <div>
-              <span style={labelS}>TYPE</span>
-              <select style={{ ...input, width:"100%" }} value={form.asset_type}
-                onChange={e => setForm(p => ({ ...p, asset_type: e.target.value }))}>
-                {TYPES.map(t => <option key={t} value={t}>{TYPE_ICON[t]} {t}</option>)}
-              </select>
-            </div>
-            <div>
-              <span style={labelS}>NAME / DESCRIPTION</span>
-              <input style={{ ...input, width:"100%" }}
-                placeholder="Fatima Hassan"
-                value={form.name}
-                onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
-            </div>
-            <div style={{ paddingTop:18 }}>
-              <button style={btn("#22c55e")} onClick={saveWorker}>Add</button>
-            </div>
+        <div style={{ background:"#0d1829", border:"1px solid #334155",
+          borderRadius:10, padding:16, marginBottom:14 }}>
+          <div style={{ display:"grid",
+            gridTemplateColumns:"120px 140px 1fr auto", gap:10, alignItems:"end" }}>
+            <div><span style={lbl}>TAG ID</span>
+              <input style={input} placeholder="W06" value={form.asset_id}
+                onChange={e=>setForm(p=>({...p, asset_id:e.target.value.trim()}))} /></div>
+            <div><span style={lbl}>TYPE</span>
+              <select style={input} value={form.asset_type}
+                onChange={e=>setForm(p=>({...p, asset_type:e.target.value}))}>
+                {TYPES.map(t=><option key={t} value={t}>{ICON[t]} {t}</option>)}
+              </select></div>
+            <div><span style={lbl}>NAME</span>
+              <input style={input} placeholder="Fatima Hassan" value={form.name}
+                onChange={e=>setForm(p=>({...p, name:e.target.value}))} /></div>
+            <button style={btn("#22c55e")} onClick={saveWorker}>Add</button>
           </div>
         </div>
       )}
 
-      {/* Worker table */}
-      <div style={{ background:"#0d1829", border:"1px solid #1e293b",
-        borderRadius:10, overflow:"auto", maxHeight:"calc(100vh - 320px)" }}>
-        {/* Header */}
-        <div style={{
-          display:"grid", gridTemplateColumns:"80px 110px 1fr 1fr 120px",
-          padding:"8px 16px", background:"#0a1628",
-          fontSize:9, fontWeight:700, color:"#475569", letterSpacing:1,
-          position:"sticky", top:0, zIndex:2,
-        }}>
-          <span>ID</span><span>TYPE</span><span>NAME</span>
-          <span>AUTHORISED FOR</span><span>ACTIONS</span>
-        </div>
+      {/* ── Asset list ── */}
+      {shown.map(w => {
+        const a       = w.authorisations || [];
+        const zoneIds = a.filter(x=>x.type==="zone").map(x=>x.id);
+        const sensIds = a.filter(x=>x.type==="sensor").map(x=>x.id);
+        const tr      = Array.isArray(w.default_trajectory) ? w.default_trajectory : [];
+        const isOpen  = openId === w.asset_id;
+        const none    = !zoneIds.length && !sensIds.length;
 
-        {shown.length === 0 && (
-          <div style={{ padding:24, textAlign:"center", color:"#334155", fontSize:12 }}>
-            No assets yet — add one above
-          </div>
-        )}
+        return (
+          <div key={w.asset_id} style={{
+            background:"#0d1829", borderRadius:10, marginBottom:10,
+            border:`1px solid ${isOpen ? "#6366f1" : none ? "#ef444455" : "#1e293b"}` }}>
 
-        {shown.map((w, i) => (
-          <div key={w.asset_id}>
-            <div style={{
-              display:"grid", gridTemplateColumns:"80px 110px 1fr 1fr 120px",
-              padding:"8px 16px", alignItems:"center",
-              borderTop: i > 0 ? "1px solid #0a1628" : "none",
-              background: editing === w.asset_id ? "#1a1a2e" : (i%2===0 ? "#0d1829" : "#0a1628"),
-            }}>
-              <span style={{ fontWeight:700, color:"#e2e8f0", fontSize:12 }}>{w.asset_id}</span>
-              <span style={{ fontSize:11, color:"#94a3b8" }}>
-                {TYPE_ICON[w.asset_type]} {w.asset_type}
-              </span>
-              <span style={{ fontSize:12, color:"#e2e8f0" }}>{w.name}</span>
-              <div>{authorisationSummary(w)}</div>
-              <div style={{ display:"flex", gap:6 }}>
-                <button style={btn("#6366f1",true)}
-                  onClick={() => editing === w.asset_id ? setEditing(null) : openAuth(w)}>
-                  {editing === w.asset_id ? "Close" : "Auth"}
-                </button>
-                <button style={btn("#ef4444",true)}
-                  onClick={() => deleteWorker(w.asset_id)}>Del</button>
+            {/* Row header — NAME first */}
+            <div style={{ display:"flex", alignItems:"center", gap:12,
+              padding:"12px 16px", flexWrap:"wrap" }}>
+              <span style={{ fontSize:20 }}>{ICON[w.asset_type] || "📍"}</span>
+              <div style={{ minWidth:150 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>
+                  {w.name}
+                </div>
+                <div style={{ fontSize:9, color:"#475569" }}>
+                  {w.asset_id} · {w.asset_type}
+                </div>
               </div>
+
+              <div style={{ flex:1, minWidth:180, display:"flex",
+                gap:4, flexWrap:"wrap" }}>
+                {none ? (
+                  <span style={{ fontSize:10, color:"#f87171" }}>
+                    ⚠ no access — always violation
+                  </span>
+                ) : (
+                  <>
+                    {zoneIds.map(z => (
+                      <span key={z} style={{ fontSize:9, padding:"2px 7px",
+                        borderRadius:3, background:zoneColor(z)+"22",
+                        color:zoneColor(z), border:`1px solid ${zoneColor(z)}55` }}>
+                        {zones.find(x=>x.zone_id===z)?.name || z}
+                      </span>
+                    ))}
+                    {sensIds.map(s => (
+                      <span key={s} style={{ fontSize:9, padding:"2px 6px",
+                        borderRadius:3, background:"#14b8a622",
+                        color:"#5eead4", border:"1px solid #14b8a655" }}>{s}</span>
+                    ))}
+                  </>
+                )}
+              </div>
+
+              <span style={{ fontSize:10, color: tr.length ? "#a5b4fc" : "#334155" }}>
+                🧭 {tr.length ? `${tr.length} waypoints` : "no trajectory"}
+              </span>
+
+              <button style={btn(isOpen ? "#6b7280" : "#6366f1", true)}
+                onClick={() => isOpen ? setOpenId(null) : open(w)}>
+                {isOpen ? "Close" : "Configure"}
+              </button>
+              <button style={btn("#ef4444", true)} onClick={() => delWorker(w)}>Delete</button>
             </div>
 
-            {/* Authorisation editor — inline expand */}
-            {editing === w.asset_id && (
-              <div style={{
-                padding:16, background:"#0f172a",
-                borderTop:"1px solid #1e293b",
-              }}>
-                <div style={{ fontSize:11, fontWeight:700, color:"#a5b4fc", marginBottom:12 }}>
-                  Authorisations for {w.asset_id} — {w.name}
+            {/* ── Editor ── */}
+            {isOpen && (
+              <div style={{ padding:"0 16px 16px", borderTop:"1px solid #1e293b" }}>
+
+                {/* ZONE AUTHORISATIONS */}
+                <div style={{ marginTop:14 }}>
+                  <div style={{ ...lbl, color:"#a5b4fc", fontWeight:700 }}>
+                    1 · ZONE AUTHORISATIONS — the asset may enter these zones
+                  </div>
+                  {zones.length === 0 ? (
+                    <div style={{ fontSize:11, color:"#f59e0b" }}>
+                      No zones defined yet — create them in the Factory Layout tab.
+                    </div>
+                  ) : (
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
+                      {zones.map(z => {
+                        const on = auth.allowed_zones.includes(z.zone_id);
+                        const c  = zoneColor(z.zone_id);
+                        return (
+                          <button key={z.zone_id} onClick={()=>toggleZone(z.zone_id)}
+                            style={{ padding:"7px 14px", fontSize:11, borderRadius:6,
+                              cursor:"pointer", fontFamily:"monospace", fontWeight:600,
+                              border:`1px solid ${on ? c : "#334155"}`,
+                              background: on ? c+"33" : "#0a1628",
+                              color: on ? c : "#475569" }}>
+                            {on ? "✓ " : ""}{z.name}
+                            <span style={{ opacity:0.6, marginLeft:5, fontSize:9 }}>
+                              {(z.sensor_ids||[]).length} sensors
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
-                {/* Zone access */}
-                <div style={{ marginBottom:14 }}>
-                  <div style={{ fontSize:10, color:"#64748b", marginBottom:6, letterSpacing:1 }}>
-                    ZONES (coarse — all sensors in zone)
+                {/* SENSOR AUTHORISATIONS */}
+                <div style={{ marginTop:16 }}>
+                  <div style={{ ...lbl, color:"#5eead4", fontWeight:700 }}>
+                    2 · SENSOR AUTHORISATIONS — extra individual cells
+                    <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
+                      {" "}(optional — {auth.allowed_sensors.length} selected)
+                    </span>
                   </div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
-                    {zones.map((z, idx) => {
-                      const active = auth.allowed_zones.includes(z.zone_id);
-                      const col    = ZONE_COLORS[idx % ZONE_COLORS.length];
-                      return (
-                        <button key={z.zone_id} onClick={() => toggleZone(z.zone_id)}
-                          style={{
-                            padding:"5px 14px", fontSize:11, borderRadius:6, cursor:"pointer",
-                            fontFamily:"monospace", fontWeight:600,
-                            border:`1px solid ${active ? col : "#334155"}`,
-                            background: active ? col+"33" : "#0d1829",
-                            color: active ? col : "#475569",
-                          }}>
-                          {active ? "✓ " : ""}{z.zone_id} — {z.name}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <GridPicker selected={auth.allowed_sensors}
+                    onToggle={toggleSensor} accent="#14b8a6" />
                 </div>
 
-                {/* Sensor-level access */}
-                <div style={{ marginBottom:14 }}>
-                  <div style={{ fontSize:10, color:"#64748b", marginBottom:6, letterSpacing:1 }}>
-                    SPECIFIC SENSORS (fine — overrides zone restriction for one cell)
+                {/* DEFAULT TRAJECTORY */}
+                <div style={{ marginTop:16 }}>
+                  <div style={{ ...lbl, color:"#f59e0b", fontWeight:700 }}>
+                    3 · DEFAULT TRAJECTORY — where the asset works, in order
+                    <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
+                      {" "}(click cells in visiting order)
+                    </span>
                   </div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {sensors.map(s => {
-                      const active = auth.allowed_sensors.includes(s.sensor_id);
-                      return (
-                        <button key={s.sensor_id} onClick={() => toggleSensor(s.sensor_id)}
-                          style={{
-                            padding:"3px 10px", fontSize:10, borderRadius:4, cursor:"pointer",
-                            fontFamily:"monospace", fontWeight:600,
-                            border:`1px solid ${active ? "#14b8a6" : "#1e293b"}`,
-                            background: active ? "#14b8a622" : "#0a1628",
-                            color: active ? "#5eead4" : "#334155",
-                          }}>
-                          {s.sensor_id}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <GridPicker selected={traj} onToggle={toggleTraj}
+                    accent="#f59e0b" ordered={traj} />
+                  {traj.length > 0 && (
+                    <div style={{ marginTop:8, padding:"7px 11px",
+                      background:"#050c1a", borderRadius:6, fontSize:10,
+                      color:"#fcd34d", fontFamily:"monospace" }}>
+                      Route: {traj.join(" → ")}
+                      <button style={{ ...btn("#6b7280", true), marginLeft:10 }}
+                        onClick={()=>setTraj([])}>Clear</button>
+                    </div>
+                  )}
                 </div>
 
-                {/* Summary & save */}
-                <div style={{
-                  padding:"8px 12px", background:"#050c1a", borderRadius:6,
-                  fontSize:10, color:"#64748b", marginBottom:12,
-                }}>
-                  {auth.allowed_zones.length === 0 && auth.allowed_sensors.length === 0
-                    ? "⚠ No access granted — every location will show as VIOLATION"
-                    : `✓ Access to ${auth.allowed_zones.length} zone(s) and ${auth.allowed_sensors.length} specific sensor(s)`}
+                {/* Summary + save */}
+                <div style={{ marginTop:16, padding:"9px 13px", background:"#050c1a",
+                  borderRadius:6, fontSize:10,
+                  color: auth.allowed_zones.length || auth.allowed_sensors.length
+                          ? "#4ade80" : "#f87171" }}>
+                  {auth.allowed_zones.length || auth.allowed_sensors.length
+                    ? `✓ ${auth.allowed_zones.length} zone(s), ${auth.allowed_sensors.length} sensor(s), ${traj.length} waypoint(s)`
+                    : "⚠ No access granted — every position will be a VIOLATION"}
                 </div>
 
-                <div style={{ display:"flex", gap:8 }}>
-                  <button style={btn()} onClick={saveAuth}>Save authorisations</button>
-                  <button style={btn("#6b7280")} onClick={() => setEditing(null)}>Cancel</button>
+                <div style={{ display:"flex", gap:8, marginTop:12 }}>
+                  <button style={btn("#22c55e")} onClick={()=>saveAuth(w)}>
+                    Save configuration
+                  </button>
+                  <button style={btn("#6b7280")} onClick={()=>setOpenId(null)}>Cancel</button>
                 </div>
               </div>
             )}
           </div>
-        ))}
-      </div>
+        );
+      })}
 
-      {/* Help */}
-      <div style={{ marginTop:16, padding:"10px 14px", background:"#0d1829",
-        border:"1px solid #1e293b", borderRadius:8, fontSize:10, color:"#475569",
-        lineHeight:1.7 }}>
-        <strong style={{color:"#94a3b8"}}>How authorisations work:</strong><br/>
-        Zone access = worker can go anywhere inside that zone.<br/>
-        Sensor access = worker can be at that one specific grid cell (overrides zone restriction).<br/>
-        No access anywhere = every location shows as <span style={{color:"#f87171"}}>VIOLATION</span>.<br/>
-        Sensor offline = status becomes <span style={{color:"#fbbf24"}}>UNKNOWN</span> (no false alarm).
-      </div>
+      {shown.length === 0 && (
+        <div style={{ padding:36, textAlign:"center", color:"#334155",
+          fontSize:12, background:"#0d1829", borderRadius:10 }}>
+          No assets — add one above
+        </div>
+      )}
     </div>
   );
 }

@@ -16,9 +16,13 @@ export default function AssetList({ assets }) {
             display:"flex", alignItems:"center", gap:8 }}>
             <span style={{ fontSize:14 }}>{ICON[a.asset_type]||"📍"}</span>
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:10, fontWeight:700, color:"#e2e8f0" }}>{a.id}</div>
-              <div style={{ fontSize:8, color:"#475569", overflow:"hidden", textOverflow:"ellipsis" }}>
-                {a.current_zone_id||"—"} / {a.current_sensor_id||"—"}
+              <div style={{ fontSize:10, fontWeight:700, color:"#e2e8f0",
+                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                {a.name || a.id}
+              </div>
+              <div style={{ fontSize:8, color:"#475569", overflow:"hidden",
+                textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                {a.id} · {a.current_zone_id||"—"} / {a.current_sensor_id||"—"}
               </div>
             </div>
             <div style={{ fontSize:8, padding:"1px 5px", borderRadius:3,

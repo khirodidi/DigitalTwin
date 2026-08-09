@@ -58,6 +58,14 @@ CREATE TABLE IF NOT EXISTS factory_config (
     value TEXT NOT NULL
 );
 
+-- Default trajectory: ordered list of sensors an asset is supposed to work at
+CREATE TABLE IF NOT EXISTS asset_trajectory (
+    asset_id  TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+    seq       INT  NOT NULL,
+    sensor_id TEXT NOT NULL,
+    PRIMARY KEY (asset_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS sensor_config (
     sensor_id     TEXT PRIMARY KEY REFERENCES sensors(sensor_id) ON DELETE CASCADE,
     coverage_type TEXT    NOT NULL DEFAULT 'passage',
@@ -102,6 +110,16 @@ def load_authorisations() -> dict[str, tuple[set, set]]:
         if r["allowed_type"] == "sensor": sensors.add(r["allowed_id"])
         else:                             zones.add(r["allowed_id"])
     return result
+
+def load_asset_meta() -> dict[str, dict]:
+    """asset_id → {name, asset_type} for display purposes."""
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute("SELECT asset_id, name, asset_type FROM assets")
+        rows = cur.fetchall()
+    return {r["asset_id"]: {"name": r["name"] or r["asset_id"],
+                            "asset_type": r["asset_type"]} for r in rows}
+
 
 def save_location_event(asset: AssetState):
     conn = get_conn()

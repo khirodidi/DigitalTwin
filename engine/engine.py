@@ -14,7 +14,7 @@ from ingestion.mqtt_parser import route_message
 from persistence.postgres  import (
     load_zone_registry, load_authorisations,
     save_location_event, save_env_reading,
-    save_event, save_system_snapshot, create_schema,
+    save_event, save_system_snapshot, create_schema, load_asset_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,12 @@ class DigitalTwinEngine:
         self._store    = StateStore(registry)
         for aid, (sensors, zones) in authorisations.items():
             self._store.set_asset_authorisations(aid, sensors, zones)
+        # Display names and types so the dashboard shows names, not IDs
+        try:
+            for aid, meta in load_asset_meta().items():
+                self._store.set_asset_meta(aid, meta["name"], meta["asset_type"])
+        except Exception as e:
+            logger.warning(f"Could not load asset names: {e}")
         self._watchdog = SensorWatchdog(self._store.health, self._on_alert)
         host = os.getenv("MQTT_HOST", "localhost")
         port = int(os.getenv("MQTT_PORT", 1883))
@@ -131,6 +137,7 @@ class DigitalTwinEngine:
             await self._ws.push_alert(violation)
         await self._ws.push_asset_update({
             "id":aid,"asset_type":asset.asset_type,
+            "name":getattr(asset, "name", None) or aid,
             "current_sensor_id":asset.current_sensor_id,"current_zone_id":asset.current_zone_id,
             "previous_sensor_id":asset.previous_sensor_id,"previous_zone_id":asset.previous_zone_id,
             "time_change_location":asset.time_change_location.isoformat() if asset.time_change_location else None,
@@ -152,7 +159,9 @@ class DigitalTwinEngine:
     def get_snapshot(self) -> dict:
         if not self._store: return {}
         state = compute_system_state(self._store.all_assets(), self._store.all_sensors(), self._store.all_health())
-        def _asset(a): return {"id":a.id,"asset_type":a.asset_type,"current_sensor_id":a.current_sensor_id,
+        def _asset(a): return {"id":a.id,"asset_type":a.asset_type,
+            "name":getattr(a, "name", None) or a.id,
+            "current_sensor_id":a.current_sensor_id,
             "current_zone_id":a.current_zone_id,"previous_sensor_id":a.previous_sensor_id,
             "previous_zone_id":a.previous_zone_id,
             "time_change_location":a.time_change_location.isoformat() if a.time_change_location else None,

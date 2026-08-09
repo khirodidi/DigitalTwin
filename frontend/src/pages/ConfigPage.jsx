@@ -28,6 +28,7 @@ export default function ConfigPage({ onBack }) {
   const [sensors,   setSensors]   = useState([]);
   const [workers,   setWorkers]   = useState([]);
   const [saving,    setSaving]    = useState(false);
+  const [factory,   setFactory]   = useState({ grid_cols:6, grid_rows:5 });
   const [toast,     setToast]     = useState(null);
 
   // ── Load all reference data once ─────────────────────────────────────────
@@ -35,11 +36,13 @@ export default function ConfigPage({ onBack }) {
 
   async function reload() {
     try {
-      const [z, s, w] = await Promise.all([
+      const [z, s, w, f] = await Promise.all([
         fetch(`${API}/api/config/zones`).then(r => r.json()),
         fetch(`${API}/api/config/sensors`).then(r => r.json()),
         fetch(`${API}/api/config/workers`).then(r => r.json()),
+        fetch(`${API}/api/config/factory`).then(r => r.json()),
       ]);
+      if (f) setFactory(f);
       setZones(Array.isArray(z) ? z : []);
       setSensors(Array.isArray(s) ? s : []);
       setWorkers(Array.isArray(w) ? w : []);
@@ -146,7 +149,10 @@ export default function ConfigPage({ onBack }) {
         {tab === "sensors"    && <SensorEditor  sensors={sensors} zones={zones} apiCall={apiCall} />}
         {tab === "workers"    && <WorkerManager workers={workers} zones={zones}
                                                 sensors={sensors} apiCall={apiCall} reload={reload} />}
-        {tab === "trajectory" && <TrajectoryMap workers={workers} sensors={sensors} />}
+        {tab === "trajectory" && <TrajectoryMap workers={workers} sensors={sensors}
+                                                zones={zones}
+                                                cols={factory.grid_cols}
+                                                rows={factory.grid_rows} />}
       </div>
 
       {/* Toast */}

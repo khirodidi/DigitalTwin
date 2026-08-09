@@ -63,9 +63,10 @@ class SensorConfigBody(BaseModel):
     description:   Optional[str] = ""
 
 class WorkerBody(BaseModel):
-    asset_id:   str
-    asset_type: str = "worker"
-    name:       str
+    asset_id:           str
+    asset_type:         str = "worker"
+    name:               str
+    default_trajectory: list[str] = []   # ordered sensors the asset works at
 
 class AuthBody(BaseModel):
     allowed_zones:   list[str] = []
@@ -334,14 +335,16 @@ def get_workers():
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT a.asset_id, a.asset_type, a.name,
-                   COALESCE(
-                     json_agg(json_build_object('type', au.allowed_type,
-                                                'id',   au.allowed_id))
-                     FILTER (WHERE au.allowed_id IS NOT NULL), '[]'
-                   ) AS authorisations
+                   COALESCE((
+                     SELECT json_agg(json_build_object('type', au.allowed_type,
+                                                       'id',   au.allowed_id))
+                     FROM authorisations au WHERE au.asset_id = a.asset_id
+                   ), '[]') AS authorisations,
+                   COALESCE((
+                     SELECT json_agg(t.sensor_id ORDER BY t.seq)
+                     FROM asset_trajectory t WHERE t.asset_id = a.asset_id
+                   ), '[]') AS default_trajectory
             FROM assets a
-            LEFT JOIN authorisations au USING (asset_id)
-            GROUP BY a.asset_id, a.asset_type, a.name
             ORDER BY a.asset_type, a.asset_id
         """)
         return cur.fetchall()
@@ -356,9 +359,19 @@ async def create_worker(body: WorkerBody):
             ON CONFLICT (asset_id) DO UPDATE
               SET asset_type = EXCLUDED.asset_type, name = EXCLUDED.name
         """, (body.asset_id, body.asset_type, body.name))
+        _write_trajectory(cur, body.asset_id, body.default_trajectory)
     conn.commit()
     await _notify("workers", {"asset_id": body.asset_id})
     return {"status": "saved", "asset_id": body.asset_id}
+
+
+def _write_trajectory(cur, asset_id: str, sensors: list[str]):
+    """Replace an asset's default trajectory with the given ordered list."""
+    cur.execute("DELETE FROM asset_trajectory WHERE asset_id=%s", (asset_id,))
+    for i, sid in enumerate(sensors or []):
+        cur.execute(
+            "INSERT INTO asset_trajectory (asset_id, seq, sensor_id) VALUES (%s,%s,%s)",
+            (asset_id, i, sid))
 
 
 @router.put("/workers/{asset_id}")
@@ -367,6 +380,7 @@ async def update_worker(asset_id: str, body: WorkerBody):
     with conn.cursor() as cur:
         cur.execute("UPDATE assets SET asset_type=%s, name=%s WHERE asset_id=%s",
                     (body.asset_type, body.name, asset_id))
+        _write_trajectory(cur, asset_id, body.default_trajectory)
     conn.commit()
     await _notify("workers", {"asset_id": asset_id})
     return {"status": "updated"}
@@ -376,6 +390,7 @@ async def update_worker(asset_id: str, body: WorkerBody):
 async def delete_worker(asset_id: str):
     conn = get_conn()
     with conn.cursor() as cur:
+        cur.execute("DELETE FROM asset_trajectory WHERE asset_id=%s", (asset_id,))
         cur.execute("DELETE FROM authorisations WHERE asset_id=%s", (asset_id,))
         cur.execute("DELETE FROM assets WHERE asset_id=%s", (asset_id,))
     conn.commit()
@@ -423,6 +438,54 @@ async def set_authorisations(asset_id: str, body: AuthBody):
     return {"status": "updated",
             "zones": len(body.allowed_zones),
             "sensors": len(body.allowed_sensors)}
+
+
+@router.post("/workers/bulk-authorise")
+async def bulk_authorise(body: dict):
+    """
+    Grant the same authorisations to many assets at once.
+
+    body = { "asset_ids": ["W01","W02"] | "all",
+             "allowed_zones": [...], "allowed_sensors": [...],
+             "mode": "replace" | "add" }
+
+    Use asset_ids="all" + allowed_zones=<every zone> to clear a violation storm
+    caused by assets that have no authorisations at all.
+    """
+    ids   = body.get("asset_ids", [])
+    zones = body.get("allowed_zones", [])
+    sens  = body.get("allowed_sensors", [])
+    mode  = body.get("mode", "replace")
+
+    conn = get_conn()
+    with conn.cursor() as cur:
+        if ids == "all" or ids == ["all"]:
+            cur.execute("SELECT asset_id FROM assets")
+            ids = [r[0] for r in cur.fetchall()]
+
+        for aid in ids:
+            if mode == "replace":
+                cur.execute("DELETE FROM authorisations WHERE asset_id=%s", (aid,))
+            for z in zones:
+                cur.execute("""INSERT INTO authorisations VALUES (%s,'zone',%s)
+                               ON CONFLICT DO NOTHING""", (aid, z))
+            for sd in sens:
+                cur.execute("""INSERT INTO authorisations VALUES (%s,'sensor',%s)
+                               ON CONFLICT DO NOTHING""", (aid, sd))
+    conn.commit()
+
+    # Push into the running engine so status recomputes immediately
+    try:
+        from api.main import engine
+        if engine and getattr(engine, "_store", None):
+            for aid in ids:
+                engine._store.set_asset_authorisations(aid, set(sens), set(zones))
+    except Exception:
+        pass
+
+    await _notify("authorisations", {"bulk": True, "count": len(ids)})
+    return {"status": "updated", "assets": len(ids),
+            "zones": len(zones), "sensors": len(sens)}
 
 
 @router.get("/workers/{asset_id}/trajectory")

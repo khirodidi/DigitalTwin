@@ -96,6 +96,7 @@ class AssetState:
     allowed_sensors:      set[str] = field(default_factory=set)
     allowed_zones:        set[str] = field(default_factory=set)
     access_status:        AccessStatus = AccessStatus.UNKNOWN
+    name:                 Optional[str] = None   # display name (falls back to id)
 
     def compute_access_status(self, health: SensorHealthState) -> AccessStatus:
         if health.status == SensorStatus.OFFLINE:

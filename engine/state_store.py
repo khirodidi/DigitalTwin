@@ -36,6 +36,7 @@ class StateStore:
     def __init__(self, zone_registry: ZoneRegistry):
         self._reg     = zone_registry
         self._assets  : dict[str, AssetState]        = {}
+        self._asset_meta: dict[str, dict]            = {}   # id → {name, type}
         self._sensors : dict[str, SensorState]       = {}
         self._health  : dict[str, SensorHealthState] = {}
 
@@ -77,9 +78,12 @@ class StateStore:
         health  = self._ensure_health(sensor_id)   # FIX: was .get() → could be None
         changed = (prev is None or prev.current_sensor_id != sensor_id)
 
-        # Preserve asset_type from previous state if known
+        # Preserve asset_type and display name from previous state / registry
         asset_type = (prev.asset_type if prev and prev.asset_type != "unknown"
-                      else "worker")
+                      else self._asset_meta.get(asset_id, {}).get("type", "worker"))
+        asset_name = ((prev.name if prev and prev.name else None)
+                      or self._asset_meta.get(asset_id, {}).get("name")
+                      or asset_id)
 
         state = AssetState(
             id                   = asset_id,
@@ -92,6 +96,7 @@ class StateStore:
                                    (prev.time_change_location if prev else timestamp),
             allowed_sensors      = prev.allowed_sensors if prev else set(),
             allowed_zones        = prev.allowed_zones   if prev else set(),
+            name                 = asset_name,
         )
         # Access status — never UNKNOWN unless sensor is genuinely OFFLINE
         state.access_status = state.compute_access_status(health)
@@ -126,6 +131,13 @@ class StateStore:
         return state
 
     # ── Authorisations ────────────────────────────────────────────────────────
+    def set_asset_meta(self, asset_id: str, name: str, asset_type: str):
+        """Register the display name and type of an asset (loaded from the DB)."""
+        self._asset_meta[asset_id] = {"name": name, "type": asset_type}
+        if asset_id in self._assets:
+            self._assets[asset_id].name       = name
+            self._assets[asset_id].asset_type = asset_type
+
     def set_asset_authorisations(self, asset_id: str,
                                   allowed_sensors: set, allowed_zones: set):
         if asset_id in self._assets:

@@ -10,8 +10,6 @@
 import { useState, useEffect } from "react";
 
 const API    = process.env.REACT_APP_API_URL || "http://localhost:8000";
-const COLS   = parseInt(process.env.REACT_APP_GRID_COLS,  10) || 6;
-const ROWS   = parseInt(process.env.REACT_APP_GRID_ROWS,  10) || 5;
 const CELL   = 76;
 const GAP    = 3;
 const MARGIN = 16;
@@ -19,12 +17,14 @@ const MARGIN = 16;
 const STATUS_COL = { authorised:"#4ade80", violation:"#f87171", unknown:"#fbbf24" };
 const TYPE_ICON  = { worker:"👷", forklift:"🚜", pallet:"📦" };
 
-function sensorPos(sid) {
-  const n = parseInt((sid || "S1").replace(/\D/g,""), 10) - 1;
-  return { row: Math.floor(n / COLS), col: n % COLS };
-}
-
-export default function TrajectoryMap({ workers, sensors }) {
+export default function TrajectoryMap({ workers, sensors, zones = [],
+                                        cols = 6, rows = 5 }) {
+  // Grid dimensions come from the live configuration
+  const COLS = cols, ROWS = rows;
+  const sensorPos = (sid) => {
+    const n = parseInt(String(sid || "S1").replace(/\D/g,""), 10) - 1;
+    return { row: Math.floor(n / COLS), col: n % COLS };
+  };
   const [selected, setSelected] = useState(null);
   const [limit,    setLimit]    = useState(50);
   const [path,     setPath]     = useState([]);
@@ -58,7 +58,13 @@ export default function TrajectoryMap({ workers, sensors }) {
       return `${MARGIN + col * (CELL + GAP) + CELL / 2},${MARGIN + row * (CELL + GAP) + CELL / 2}`;
     }).join(" ");
 
-  const worker = workers.find(w => w.asset_id === selected);
+  const worker  = workers.find(w => w.asset_id === selected);
+  const planned = Array.isArray(worker?.default_trajectory)
+                  ? worker.default_trajectory : [];
+  const plannedPts = planned.map(p => {
+    const { row, col } = sensorPos(p);
+    return `${MARGIN + col*(CELL+GAP) + CELL/2},${MARGIN + row*(CELL+GAP) + CELL/2}`;
+  }).join(" ");
 
   return (
     <div>
@@ -78,7 +84,7 @@ export default function TrajectoryMap({ workers, sensors }) {
             <option value="">— choose worker —</option>
             {workers.map(w => (
               <option key={w.asset_id} value={w.asset_id}>
-                {TYPE_ICON[w.asset_type] || "📍"} {w.asset_id} — {w.name}
+                {TYPE_ICON[w.asset_type] || "📍"} {w.name} ({w.asset_id})
               </option>
             ))}
           </select>
@@ -146,7 +152,24 @@ export default function TrajectoryMap({ workers, sensors }) {
                   stroke="#1e3a5f" strokeWidth="0.5" />
               ))}
 
-              {/* Trajectory polyline */}
+              {/* Configured default trajectory (reference) */}
+              {plannedPts && (
+                <polyline points={plannedPts} fill="none" stroke="#f59e0b"
+                  strokeWidth="2.5" strokeDasharray="2 6" opacity="0.55"/>
+              )}
+              {planned.map((p, i) => {
+                const { row, col } = sensorPos(p);
+                if (row >= ROWS || col >= COLS) return null;
+                return (
+                  <circle key={"pl"+i}
+                    cx={MARGIN + col*(CELL+GAP) + CELL/2}
+                    cy={MARGIN + row*(CELL+GAP) + CELL/2}
+                    r={5} fill="none" stroke="#f59e0b" strokeWidth="1.5"
+                    opacity="0.8"/>
+                );
+              })}
+
+              {/* Actual observed trajectory */}
               {linePoints && (
                 <polyline points={linePoints}
                   fill="none" stroke="#6366f1" strokeWidth="2"
@@ -211,6 +234,7 @@ export default function TrajectoryMap({ workers, sensors }) {
                 { col:"#4ade80", label:"Authorised" },
                 { col:"#f87171", label:"Violation" },
                 { col:"#fbbf24", label:"Unknown" },
+                { col:"#f59e0b", label:"Planned route" },
               ].map(({ col: c, label }, i) => (
                 <g key={label} transform={`translate(${MARGIN + i * 105}, ${svgH - 14})`}>
                   <rect width={10} height={10} rx={2} fill={c} opacity={0.8} />
