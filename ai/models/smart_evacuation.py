@@ -320,3 +320,34 @@ class SmartEvacuationPlanner:
         """Cancel active evacuation (all-clear)."""
         self._active = False
         self._last_routes = {}
+
+
+# =============================================================================
+# Fire-map integration (added with model ④)
+# The fire detector produces a per-cell probability map. Feeding it into the
+# danger score lets routing avoid cells the fire is predicted to reach, not
+# only cells whose sensors already read critical.
+# =============================================================================
+
+def attach_fire_map(planner, fire_map):
+    """
+    Store the latest fire probability grid on a planner instance.
+    danger(cell) = max(sensor_danger, fire_probability)
+    """
+    planner._fire_map = fire_map
+
+
+def fire_adjusted_danger(planner, sensor_id: str, base_danger: float,
+                         cols: int) -> float:
+    """Combine the model's sensor-based danger with the fire map."""
+    fm = getattr(planner, "_fire_map", None)
+    if fm is None:
+        return base_danger
+    try:
+        n = int("".join(c for c in str(sensor_id) if c.isdigit()) or 1) - 1
+        r, c = divmod(n, cols)
+        if r < fm.shape[0] and c < fm.shape[1]:
+            return max(base_danger, float(fm[r, c]))
+    except Exception:
+        pass
+    return base_danger

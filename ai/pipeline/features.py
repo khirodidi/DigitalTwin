@@ -57,3 +57,117 @@ def build_zone_sequence(loc_df: pd.DataFrame, asset_id: str,
     tokens = [zone_vocab.get(z,0) for z in df["current_zone_id"].tolist()]
     if len(tokens)>=seq_len: return np.array(tokens[-seq_len:],dtype=np.int32)
     return np.array([0]*(seq_len-len(tokens))+tokens, dtype=np.int32)
+
+
+# =============================================================================
+# TRAJECTORY-AWARE MOVEMENT FEATURES  (added with the config-driven AI update)
+#
+# The movement model now has ground truth: each asset's configured
+# default_trajectory. Instead of scoring movement with a hand-tuned heuristic,
+# we measure how far the actual path deviates from the planned route.
+# =============================================================================
+
+def dtw_distance(seq_a: list, seq_b: list, pos_fn) -> float:
+    """
+    Dynamic Time Warping between two cell sequences.
+
+    Why DTW rather than a direct comparison: a worker who visits the right
+    stops in the right order but lingers at one machine should not be
+    penalised. DTW aligns sequences of unequal length and absorbs timing
+    differences, measuring only route shape.
+
+    pos_fn maps a sensor_id to (row, col) so the cost is real grid distance.
+    """
+    if not seq_a or not seq_b:
+        return float(len(seq_a) + len(seq_b))
+
+    n, m = len(seq_a), len(seq_b)
+    INF  = float("inf")
+    prev = [INF] * (m + 1)
+    prev[0] = 0.0
+
+    for i in range(1, n + 1):
+        cur = [INF] * (m + 1)
+        ra, ca = pos_fn(seq_a[i - 1])
+        for j in range(1, m + 1):
+            rb, cb = pos_fn(seq_b[j - 1])
+            cost = abs(ra - rb) + abs(ca - cb)          # manhattan on the grid
+            cur[j] = cost + min(prev[j], cur[j - 1], prev[j - 1])
+        prev = cur
+    return float(prev[m])
+
+
+def build_trajectory_features(cell_sequence: list, planned: list,
+                              pos_fn, coverage: dict = None) -> dict:
+    """
+    Compare an actual movement sequence against the configured trajectory.
+
+    cell_sequence : sensors the asset actually visited, in order
+    planned       : the asset's default_trajectory from configuration
+    pos_fn        : sensor_id → (row, col)
+    coverage      : sensor_id → coverage_type, for dwell breakdown
+
+    Returns the 11 tabular features consumed by the movement LSTM.
+    """
+    coverage = coverage or {}
+    n_actual = len(cell_sequence)
+
+    if not planned or n_actual == 0:
+        return {
+            "dtw_distance": 0.0, "route_adherence": 1.0, "extra_cells": 0.0,
+            "path_efficiency": 1.0, "machine_dwell_ratio": 0.0,
+            "passage_transit_ratio": 0.0, "has_planned_route": 0.0,
+        }
+
+    # How much the actual path deviates from the plan, length-normalised
+    raw_dtw = dtw_distance(cell_sequence, planned, pos_fn)
+    norm    = raw_dtw / max(2.0 * len(planned), 1.0)
+
+    # Were the planned waypoints visited, and in the right order?
+    hit, idx = 0, 0
+    for cell in cell_sequence:
+        if idx < len(planned) and cell == planned[idx]:
+            hit += 1; idx += 1
+    adherence = hit / max(len(planned), 1)
+
+    planned_set = set(planned)
+    extra = sum(1 for c in cell_sequence if c not in planned_set)
+
+    # Shortest possible path through the planned waypoints vs steps taken
+    ideal = 0.0
+    for a, b in zip(planned, planned[1:]):
+        ra, ca = pos_fn(a); rb, cb = pos_fn(b)
+        ideal += abs(ra - rb) + abs(ca - cb)
+    efficiency = min(ideal / max(n_actual - 1, 1), 1.0) if ideal else 1.0
+
+    # Where the time went, by what the sensor covers
+    machine = sum(1 for c in cell_sequence if coverage.get(c) == "machine")
+    passage = sum(1 for c in cell_sequence if coverage.get(c, "passage") == "passage")
+
+    return {
+        "dtw_distance":          float(min(norm, 3.0)),
+        "route_adherence":       float(adherence),
+        "extra_cells":           float(extra / max(n_actual, 1)),
+        "path_efficiency":       float(efficiency),
+        "machine_dwell_ratio":   float(machine / max(n_actual, 1)),
+        "passage_transit_ratio": float(passage / max(n_actual, 1)),
+        "has_planned_route":     1.0,
+    }
+
+
+def trajectory_efficiency_label(feats: dict) -> float:
+    """
+    Ground-truth efficiency derived from route deviation.
+
+    A worker following their configured route scores 1.0. Deviation costs
+    proportionally, with adherence and wandering weighted separately so the
+    model can distinguish "took a detour" from "never did the job".
+    """
+    if not feats.get("has_planned_route"):
+        return None                      # caller falls back to the heuristic
+
+    score  = 1.0
+    score -= min(feats.get("dtw_distance", 0.0) * 0.45, 0.50)
+    score -= (1.0 - feats.get("route_adherence", 1.0)) * 0.30
+    score -= min(feats.get("extra_cells", 0.0) * 0.40, 0.20)
+    return float(max(0.0, min(1.0, round(score, 4))))

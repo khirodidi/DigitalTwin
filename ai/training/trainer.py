@@ -27,9 +27,19 @@ class AITrainer:
 
     async def _retrain_all(self):
         logger.info(f"[AITrainer] Nightly retraining — {datetime.utcnow()}")
+        # The fire model trains on synthetic scenarios generated from the
+        # configured grid, so it does not need accumulated operational data.
         if not self._has_enough_data():
-            logger.info("[AITrainer] Not enough data yet."); return
-        await self._run("movement");  await self._run("evacuation"); await self._run("monitor")
+            logger.info("[AITrainer] Not enough operational data — "
+                        "training the fire model only.")
+            await self._run("fire")
+            self._reload()
+            return
+        # Fire trains first — evacuation consumes its output as a feature
+        await self._run("fire")
+        await self._run("movement")
+        await self._run("evacuation")
+        await self._run("monitor")
         self._reload()
 
     async def _run(self, model: str):
@@ -43,6 +53,9 @@ class AITrainer:
             elif model == "monitor":
                 from ai.training.monitor    import train_monitor_models
                 train_monitor_models(model_dir=str(MODEL_DIR))
+            elif model == "fire":
+                from ai.training.fire       import train_fire_model
+                train_fire_model(model_path=str(MODEL_DIR/"fire_convlstm.pt"))
             logger.info(f"[AITrainer] {model} retrained.")
         except Exception as e:
             logger.error(f"[AITrainer] {model} failed: {e}", exc_info=True)

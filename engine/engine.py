@@ -35,6 +35,9 @@ class DigitalTwinEngine:
         self._movement_model = None
         self._monitor_model  = None
         self._evac_model     = None
+        self._fire_model     = None      # ④ fire detection & localisation
+        self._latest_env     = {}        # sensor_id → last reading, for the grid
+        self._fire_active    = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
     async def start(self):
@@ -138,6 +141,28 @@ class DigitalTwinEngine:
                         await self._ws.push_ai_insight(a)
             except Exception as e:
                 logger.debug(f"Monitor inference: {e}")
+        # ── ④ Fire detection & localisation — needs the WHOLE grid ──────────
+        self._latest_env[sid] = {"temperature": sensor.temperature,
+                                 "humidity":    sensor.humidity,
+                                 "smoke":       sensor.smoke}
+        if self._fire_model:
+            try:
+                health_map = {h.sensor_id: h.status for h in self._store.all_health()}
+                fire = self._fire_model.update(self._latest_env, health_map)
+                if fire:
+                    if not self._fire_active:
+                        self._fire_active = True
+                        self._safe_db(lambda f=fire: save_event(f))
+                        await self._ws.push_alert(fire)
+                    await self._ws.push_ai_insight({**fire, "type": "fire_localisation"})
+                    # Feed the fire map into evacuation routing
+                    if self._evac_model and hasattr(self._evac_model, "set_fire_map"):
+                        self._evac_model.set_fire_map(self._fire_model.fire_map())
+                else:
+                    self._fire_active = False
+            except Exception as e:
+                logger.debug(f"Fire inference: {e}")
+
         await self._ws.push_sensor_update({
             "sensor_id":sid,"zone_id":sensor.zone_id,
             "temperature":sensor.temperature,"humidity":sensor.humidity,
@@ -268,6 +293,32 @@ class DigitalTwinEngine:
                 "health": [_health(h) for h in self._store.all_health()],
                 "assets": [_asset(a)  for a in self._store.all_assets()]}
 
+    def _load_fire_model(self):
+        """Load the fire detector, sized to the configured grid."""
+        try:
+            from ai.models.fire_detector import FireDetectorInference
+            from persistence.postgres import get_conn
+            import psycopg2.extras
+            conn = get_conn()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT key, value FROM factory_config")
+                cfg = {r["key"]: r["value"] for r in cur.fetchall()}
+                cur.execute("""SELECT s.sensor_id,
+                                      COALESCE(sc.coverage_type,'passage') AS ct
+                               FROM sensors s
+                               LEFT JOIN sensor_config sc USING (sensor_id)""")
+                coverage = {r["sensor_id"]: r["ct"] for r in cur.fetchall()}
+            cols = int(cfg.get("grid_cols") or 6)
+            rows = int(cfg.get("grid_rows") or 5)
+            self._fire_model = FireDetectorInference(
+                model_path="models/fire_convlstm.pt",
+                cols=cols, rows=rows, coverage=coverage)
+            logger.info(f"Fire detector ready ({cols}x{rows}, "
+                        f"{'trained model' if self._fire_model.model else 'rule-based'})")
+        except Exception as e:
+            logger.info(f"Fire detector unavailable: {e}")
+            self._fire_model = None
+
     def reload_ai_models(self):
         from pathlib import Path
         MODEL_DIR = Path("models")
@@ -284,3 +335,6 @@ class DigitalTwinEngine:
             except Exception as e:
                 logger.info(f"AI model not available ({name}): {e}")
                 setattr(self, attr, None)
+
+        # ④ Fire detector — always loaded; falls back to rules when untrained
+        self._load_fire_model()

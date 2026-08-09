@@ -19,6 +19,16 @@ def log_metrics(run_name,metrics):
         for k,v in metrics.items(): mlflow.log_metric(k,v)
         mlflow.log_param("trained_at",datetime.utcnow().isoformat())
 
+def run_fire():
+    logger.info("━━━━ ④ Fire detection & localisation ━━━━")
+    try:
+        from ai.training.fire import train_fire_model
+        m = train_fire_model(model_path=str(MODEL_DIR/"fire_convlstm.pt"))
+        log_metrics("fire", m); logger.info(f"  ✓ {m}"); return m
+    except Exception as e:
+        logger.error(f"  ✗ {e}", exc_info=True); return {}
+
+
 def run_movement(days=30):
     logger.info("━━━━ ① Movement optimiser ━━━━")
     try:
@@ -45,7 +55,8 @@ def run_monitor(days=30):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument("--model",choices=["all","movement","evacuation","monitor"],default="all")
+    parser.add_argument("--model",
+        choices=["all","movement","evacuation","monitor","fire"], default="all")
     parser.add_argument("--days",type=int,default=30)
     parser.add_argument("--skip-check",action="store_true")
     args=parser.parse_args()
@@ -56,6 +67,8 @@ def main():
         issues=check_data_quality()
         if issues: logger.warning(f"Quality issues: {issues}")
     all_metrics={}
+    # Fire first — evacuation uses its output as an input feature
+    if args.model in ("all","fire"):       all_metrics["fire"]=run_fire()
     if args.model in ("all","movement"):   all_metrics["movement"]=run_movement(args.days)
     if args.model in ("all","evacuation"): all_metrics["evacuation"]=run_evacuation(max(args.days,90))
     if args.model in ("all","monitor"):    all_metrics["monitor"]=run_monitor(args.days)
