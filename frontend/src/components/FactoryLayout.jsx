@@ -6,7 +6,8 @@
 //   • Zones defined by clicking sensors on a visual grid picker
 // =============================================================================
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
+import BlueprintUpload from "./BlueprintUpload";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 const PALETTE = ["#14b8a6","#3b82f6","#8b5cf6","#f59e0b",
@@ -25,12 +26,9 @@ const card = { background:"#0d1829", border:"1px solid #1e293b",
 
 export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
   const [cfg,      setCfg]      = useState({ factory_name:"", blueprint_url:"", grid_cols:6, grid_rows:5 });
-  const [dragOver, setDragOver] = useState(false);
-  const [uploading,setUploading]= useState(false);
   const [editZone, setEditZone] = useState(null);
   const [zoneSel,  setZoneSel]  = useState({});
   const [newZone,  setNewZone]  = useState({ zone_id:"", name:"", description:"" });
-  const fileRef = useRef();
 
   useEffect(() => { loadCfg(); }, []);
 
@@ -40,33 +38,6 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
       setCfg({ factory_name:d.factory_name||"", blueprint_url:d.blueprint_url||"",
                grid_cols:d.grid_cols||6, grid_rows:d.grid_rows||5 });
     } catch {}
-  }
-
-  // ── Blueprint upload ──────────────────────────────────────────────────────
-  async function uploadFile(file) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) { alert("Please choose an image file"); return; }
-    if (file.size > 10*1024*1024)        { alert("Max file size is 10 MB");     return; }
-
-    setUploading(true);
-    const fd = new FormData();
-    fd.append("file", file);
-    try {
-      const r = await fetch(`${API}/api/config/factory/blueprint`, { method:"POST", body:fd });
-      if (!r.ok) throw new Error(await r.text());
-      const d = await r.json();
-      setCfg(p => ({ ...p, blueprint_url: d.blueprint_url }));
-    } catch (e) {
-      alert("Upload failed: " + e.message);
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function removeBlueprint() {
-    if (!window.confirm("Remove the current blueprint image?")) return;
-    await fetch(`${API}/api/config/factory/blueprint`, { method:"DELETE" });
-    setCfg(p => ({ ...p, blueprint_url:"" }));
   }
 
   function saveFactory() {
@@ -104,10 +75,6 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
     apiCall(`/api/config/zones/${zid}`, "DELETE");
   }
 
-  const previewSrc = cfg.blueprint_url
-    ? (cfg.blueprint_url.startsWith("http") ? cfg.blueprint_url : `${API}${cfg.blueprint_url}`)
-    : null;
-
   const cols = parseInt(cfg.grid_cols) || 6;
   const rows = parseInt(cfg.grid_rows) || 5;
   const sensorId = (r,c) => `S${String(r*cols+c+1).padStart(2,"0")}`;
@@ -127,61 +94,9 @@ export default function FactoryLayout({ zones, sensors, apiCall, reload }) {
           Factory Blueprint
         </div>
 
-        <div
-          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={e => {
-            e.preventDefault(); setDragOver(false);
-            uploadFile(e.dataTransfer.files?.[0]);
-          }}
-          onClick={() => fileRef.current?.click()}
-          style={{
-            border:`2px dashed ${dragOver ? "#6366f1" : "#334155"}`,
-            borderRadius:10, padding: previewSrc ? 12 : 36,
-            textAlign:"center", cursor:"pointer",
-            background: dragOver ? "#6366f111" : "#050c1a",
-            transition:"all .15s",
-          }}>
-          <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }}
-                 onChange={e => uploadFile(e.target.files?.[0])} />
-
-          {uploading ? (
-            <div style={{ color:"#6366f1", fontSize:12 }}>Uploading…</div>
-          ) : previewSrc ? (
-            <div>
-              <img src={previewSrc} alt="Factory blueprint"
-                   style={{ maxWidth:"100%", maxHeight:260, borderRadius:6,
-                            border:"1px solid #1e293b" }} />
-              <div style={{ fontSize:10, color:"#475569", marginTop:8 }}>
-                Click or drop a new image to replace
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div style={{ fontSize:32, marginBottom:8 }}>🏭</div>
-              <div style={{ fontSize:13, color:"#94a3b8", marginBottom:4 }}>
-                {dragOver ? "Drop the image here" : "Click to choose or drag an image here"}
-              </div>
-              <div style={{ fontSize:10, color:"#475569" }}>
-                PNG · JPG · GIF · WEBP · SVG  —  max 10 MB
-              </div>
-            </div>
-          )}
-        </div>
-
-        {previewSrc && (
-          <div style={{ display:"flex", gap:8, marginTop:10, alignItems:"center" }}>
-            <button style={btn("#6366f1", true)} onClick={() => fileRef.current?.click()}>
-              Replace image
-            </button>
-            <button style={btn("#ef4444", true)} onClick={removeBlueprint}>
-              Remove
-            </button>
-            <span style={{ fontSize:9, color:"#334155", marginLeft:"auto" }}>
-              {cfg.blueprint_url}
-            </span>
-          </div>
-        )}
+        <BlueprintUpload
+          value={cfg.blueprint_url}
+          onChange={url => setCfg(p => ({ ...p, blueprint_url: url }))} />
       </div>
 
       {/* ═══ Factory name + grid size ═══ */}

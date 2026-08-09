@@ -36,8 +36,11 @@ app = FastAPI(title="Digital Twin — Factory Monitoring",
               version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(CORSMiddleware,
-    allow_origins=["http://localhost:3000","http://frontend:3000"],
-    allow_methods=["*"], allow_headers=["*"])
+    # Allow any origin so the dashboard works from localhost, a LAN IP or
+    # behind the nginx proxy without rebuilding. Tighten for production.
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
 
 # ── Serve uploaded blueprint images at /static/blueprints/<file> ────────────
 import os

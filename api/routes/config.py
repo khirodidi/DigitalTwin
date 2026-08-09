@@ -174,18 +174,43 @@ async def upload_blueprint(file: UploadFile = File(...)):
         raise HTTPException(400,
             f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXT))}")
 
+    # Fail fast and loudly if the storage directory is not usable, instead of
+    # letting the request hang or die mid-write.
+    try:
+        BLUEPRINT_DIR.mkdir(parents=True, exist_ok=True)
+        probe = BLUEPRINT_DIR / ".write_test"
+        probe.write_text("ok"); probe.unlink()
+    except Exception as e:
+        raise HTTPException(500,
+            f"Blueprint directory {BLUEPRINT_DIR} is not writable: {e}")
+
     # Unique filename so browsers don't serve a stale cached image
     fname = f"blueprint_{uuid.uuid4().hex[:10]}{ext}"
     dest  = BLUEPRINT_DIR / fname
 
     size = 0
-    with dest.open("wb") as out:
-        while chunk := await file.read(1024 * 256):
-            size += len(chunk)
-            if size > MAX_BYTES:
-                out.close(); dest.unlink(missing_ok=True)
-                raise HTTPException(400, "File too large (max 10 MB)")
-            out.write(chunk)
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 256)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_BYTES:
+                    out.close(); dest.unlink(missing_ok=True)
+                    raise HTTPException(400,
+                        f"File too large ({size/1e6:.1f} MB) — maximum is "
+                        f"{MAX_BYTES/1e6:.0f} MB")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, f"Could not save the image: {e}")
+
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "The uploaded file was empty")
 
     url = f"/static/blueprints/{fname}"
 
@@ -208,6 +233,27 @@ async def upload_blueprint(file: UploadFile = File(...)):
     await _notify("blueprint", {"blueprint_url": url})
     return {"status": "uploaded", "blueprint_url": url,
             "filename": fname, "size_bytes": size}
+
+
+@router.get("/factory/blueprint/status")
+def blueprint_status():
+    """Diagnostics for upload problems — writability, disk contents, limits."""
+    writable, err = True, None
+    try:
+        BLUEPRINT_DIR.mkdir(parents=True, exist_ok=True)
+        probe = BLUEPRINT_DIR / ".write_test"
+        probe.write_text("ok"); probe.unlink()
+    except Exception as e:
+        writable, err = False, str(e)
+    files = []
+    try:
+        files = [f.name for f in BLUEPRINT_DIR.iterdir() if f.is_file()]
+    except Exception:
+        pass
+    return {"directory": str(BLUEPRINT_DIR), "writable": writable,
+            "error": err, "files": files,
+            "max_bytes": MAX_BYTES,
+            "allowed": sorted(ALLOWED_EXT)}
 
 
 @router.delete("/factory/blueprint")

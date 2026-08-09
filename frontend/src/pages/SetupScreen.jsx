@@ -9,7 +9,8 @@
 // added later from the Configuration page.
 // =============================================================================
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
+import BlueprintUpload from "../components/BlueprintUpload";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
@@ -18,11 +19,8 @@ export default function SetupScreen({ onDone, onOpenConfig }) {
   const [cols,      setCols]      = useState(6);
   const [rows,      setRows]      = useState(5);
   const [blueprint, setBlueprint] = useState("");
-  const [uploading, setUploading] = useState(false);
   const [saving,    setSaving]    = useState(false);
-  const [drag,      setDrag]      = useState(false);
   const [err,       setErr]       = useState(null);
-  const fileRef = useRef();
 
   // Pick up anything already stored (e.g. a half-finished setup)
   useEffect(() => {
@@ -33,25 +31,6 @@ export default function SetupScreen({ onDone, onOpenConfig }) {
       if (d.blueprint_url) setBlueprint(d.blueprint_url);
     }).catch(() => {});
   }, []);
-
-  async function upload(file) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) { setErr("Please choose an image file"); return; }
-    if (file.size > 10 * 1024 * 1024)    { setErr("Maximum file size is 10 MB"); return; }
-    setErr(null); setUploading(true);
-    try {
-      const fd = new FormData(); fd.append("file", file);
-      const r = await fetch(`${API}/api/config/factory/blueprint`,
-                            { method: "POST", body: fd });
-      if (!r.ok) throw new Error(await r.text());
-      const d = await r.json();
-      setBlueprint(d.blueprint_url);
-    } catch (e) {
-      setErr("Upload failed: " + e.message);
-    } finally {
-      setUploading(false);
-    }
-  }
 
   async function finish() {
     if (!ready) return;
@@ -96,10 +75,13 @@ export default function SetupScreen({ onDone, onOpenConfig }) {
 
   return (
     <div style={{
-      minHeight:"100vh", background:"#050c1a", color:"#e2e8f0",
+      height:"100vh", minHeight:0, display:"flex", flexDirection:"column",
+      background:"#050c1a", color:"#e2e8f0",
       fontFamily:"'IBM Plex Mono','Fira Code',monospace",
-      overflowY:"auto", overflowX:"hidden",
+      overflow:"hidden",
     }}>
+      {/* Scrollable body — the only scrolling region on this screen */}
+      <div style={{ flex:1, minHeight:0, overflowY:"auto", overflowX:"hidden" }}>
       <div style={{ maxWidth:780, margin:"0 auto", padding:"48px 20px 80px" }}>
 
         {/* Header */}
@@ -171,44 +153,7 @@ export default function SetupScreen({ onDone, onOpenConfig }) {
             </div>
           </div>
 
-          <div
-            onDragOver={e => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={e => { e.preventDefault(); setDrag(false);
-                           upload(e.dataTransfer.files?.[0]); }}
-            onClick={() => fileRef.current?.click()}
-            style={{
-              border:`2px dashed ${drag ? "#6366f1" : blueprint ? "#22c55e55" : "#334155"}`,
-              borderRadius:10, padding: src ? 14 : 40, textAlign:"center",
-              cursor:"pointer", background: drag ? "#6366f111" : "#050c1a",
-              transition:"all .15s",
-            }}>
-            <input ref={fileRef} type="file" accept="image/*"
-              style={{ display:"none" }}
-              onChange={e => upload(e.target.files?.[0])} />
-            {uploading ? (
-              <div style={{ color:"#6366f1", fontSize:13 }}>Uploading…</div>
-            ) : src ? (
-              <>
-                <img src={src} alt="Blueprint" style={{ maxWidth:"100%",
-                  maxHeight:260, borderRadius:6, border:"1px solid #1e293b" }} />
-                <div style={{ fontSize:10, color:"#475569", marginTop:10 }}>
-                  Click or drop another image to replace
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize:30, marginBottom:10 }}>📐</div>
-                <div style={{ fontSize:13, color:"#94a3b8", marginBottom:5 }}>
-                  {drag ? "Drop the floor plan here"
-                        : "Click to choose, or drag an image here"}
-                </div>
-                <div style={{ fontSize:10, color:"#475569" }}>
-                  PNG · JPG · GIF · WEBP · SVG — max 10 MB
-                </div>
-              </>
-            )}
-          </div>
+          <BlueprintUpload value={blueprint} onChange={setBlueprint} />
         </div>
 
         {/* Error */}
@@ -250,6 +195,7 @@ export default function SetupScreen({ onDone, onOpenConfig }) {
             </>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
