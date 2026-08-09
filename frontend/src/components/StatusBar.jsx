@@ -1,4 +1,3 @@
-import { FACTORY_NAME } from "../config/factory";
 const S_CFG = {
   nominal:  { bg:"#052e16", border:"#16a34a", text:"#4ade80", icon:"✓", label:"NOMINAL"  },
   degraded: { bg:"#431407", border:"#ea580c", text:"#fb923c", icon:"⚠", label:"DEGRADED" },

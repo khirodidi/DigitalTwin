@@ -4,7 +4,15 @@
 // Shows: sensor info, env readings, and all assets grouped by type.
 // =============================================================================
 import { useMemo } from "react";
-import { statusBg, assetIcon } from "../config/factory";
+// Inlined so this component has no dependency on build-time env vars
+const ASSET_ICONS = { worker:"👷", forklift:"🚜", pallet:"📦", object:"📍" };
+const assetIcon = t => ASSET_ICONS[t] || "📍";
+const statusBg = (s, e) =>
+  s === "offline"  ? { bg:"#111827", border:"#374151", text:"#6b7280" } :
+  s === "degraded" ? { bg:"#1c1408", border:"#d97706", text:"#fbbf24" } :
+  e === "critical" ? { bg:"#1a0808", border:"#dc2626", text:"#f87171" } :
+  e === "warning"  ? { bg:"#1a0f04", border:"#f97316", text:"#fb923c" } :
+                     { bg:"#041a10", border:"#10b981", text:"#34d399" };
 
 const ACCESS_STYLE = {
   authorised: { color:"#4ade80", icon:"●" },
@@ -53,7 +61,9 @@ function AssetGroup({ type, assets }) {
 }
 
 export default function SensorDetail({ sensorId, sensor, health, assets, onClose, config, zone }) {
-  if (!sensorId) return null;
+  // NOTE: every hook must run on every render — the early return for a missing
+  // sensorId lives BELOW the useMemo, never above it. Returning first would
+  // change the hook count between renders and crash React.
 
   const S   = sensor || {};
   const H   = health || {};
@@ -69,6 +79,9 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
     });
     return g;
   }, [assets]);
+
+  // Safe to bail out now that all hooks have run
+  if (!sensorId) return null;
 
   const totalAssets = (assets || []).length;
 
@@ -177,7 +190,7 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
 
           {totalAssets === 0 ? (
             <div style={{ textAlign:"center", color:"#334155", fontSize:11, padding:20 }}>
-              No assets in this sensor's range
+              No assets in range of this sensor
             </div>
           ) : (
             Object.entries(groups).map(([type, list]) => (
