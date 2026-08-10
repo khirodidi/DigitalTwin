@@ -12,7 +12,7 @@ SCENARIOS = [
     {"id":"high_humidity",       "condition":lambda s,_: (s.humidity or 0)>85,
      "level":"warning", "type":"high_humidity","message":lambda s,_: f"Humidity {s.humidity:.1f}% zone {s.zone_id}","action":"check_ventilation"},
     {"id":"workers_in_smoke",    "condition":lambda s,a: s.smoke and len(a)>0,
-     "level":"critical","type":"workers_in_danger","message":lambda s,a: f"{len(a)} asset(s) in zone {s.zone_id} with smoke: {[x.id for x in a]}","action":"emergency_alert"},
+     "level":"critical","type":"workers_in_danger","message":lambda s,a: f"{len(a)} asset(s) in zone {s.zone_id} with smoke: {[x.name or x.id for x in a]}","action":"emergency_alert"},
     {"id":"workers_high_temp",   "condition":lambda s,a: (s.temperature or 0)>60 and len(a)>0,
      "level":"critical","type":"workers_in_high_temp","message":lambda s,a: f"{len(a)} asset(s) in zone {s.zone_id} at {s.temperature:.1f}°C","action":"emergency_alert"},
 ]
@@ -22,7 +22,7 @@ def check_access(asset: AssetState) -> dict | None:
         return {"type":"access_violation","level":"critical","asset_id":asset.id,
                 "asset_type":asset.asset_type,"sensor_id":asset.current_sensor_id,
                 "zone_id":asset.current_zone_id,"previous_zone_id":asset.previous_zone_id,
-                "message":f"{asset.id} ({asset.asset_type}) entered unauthorised zone {asset.current_zone_id} / sensor {asset.current_sensor_id}",
+                "message":f"{asset.name or asset.id} ({asset.asset_type}) entered unauthorised zone {asset.current_zone_id} / sensor {asset.current_sensor_id}",
                 "action":"alert_security","timestamp":datetime.utcnow().isoformat()}
     return None
 
