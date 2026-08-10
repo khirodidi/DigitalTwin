@@ -69,13 +69,18 @@ export default function FactoryMap({
   };
   const showImg = blueprintSrc && !imgError;
 
-  // Esc closes full screen
+  // Esc closes full screen — but an open sensor panel closes first, so one
+  // press never drops the whole view out from under the panel being read.
   useEffect(() => {
     if (!fullscreen) return;
-    const onKey = e => { if (e.key === "Escape") setFullscreen(false); };
+    const onKey = e => {
+      if (e.key !== "Escape") return;
+      if (selected) setSelected(null);
+      else          setFullscreen(false);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
+  }, [fullscreen, selected]);
 
   // ── Zone perimeters: an edge only where the neighbour is a different zone ─
   const zoneEdges = useMemo(() => {

@@ -281,8 +281,13 @@ class Asset:
         self.name       = spec["name"]
         self.zones      = spec["allowed_zones"]
         self.sensors_ok = spec["allowed_sensors"]
-        self.configured = [s for s in (spec.get("default_trajectory") or [])
-                           if s in cfg.sensors and cfg.passable(s)]
+        # Impassable cells cannot be waypoints. Record what was dropped so the
+        # operator is told their configured route crosses blocked ground.
+        raw_route       = [s for s in (spec.get("default_trajectory") or [])
+                           if s in cfg.sensors]
+        self.configured = [s for s in raw_route if cfg.passable(s)]
+        self.blocked_wp = [s for s in raw_route if not cfg.passable(s)]
+        self.stranded   = []      # waypoints cut off behind impassable cells
         self.viol_rate  = violation_rate
         self.avoid      = self.AVOID.get(self.type, [])
         self.style      = self.STYLE.get(self.type, "patrol")
@@ -302,6 +307,19 @@ class Asset:
         else:
             self.waypoints = self._build_trajectory(n_waypoints)
             self.source = "generated"
+
+        # A configured route may name cells that are unreachable from its own
+        # start because impassable cells sit between them. shortest_path()
+        # correctly refuses to cross blocked ground and returns no path, which
+        # would leave the asset frozen on its first cell forever. Drop the
+        # stranded waypoints instead, and regenerate if too few remain.
+        self.waypoints, self.stranded = self._prune_unreachable(self.waypoints)
+        if len(self.waypoints) < 2 and self.source == "configured":
+            regenerated = self._build_trajectory(n_waypoints)
+            if len(regenerated) >= 2:
+                self.waypoints = regenerated
+                self.source    = "regen"
+
         self.wp_index   = 0
         self.leg        = []      # remaining cells on the current leg
         self.direction  = 1       # for patrol reversal
@@ -348,6 +366,32 @@ class Asset:
                 if nb in home and nb not in seen:
                     seen.add(nb); q.append(nb)
         return seen
+
+    def _reachable_from(self, origin):
+        """
+        Flood-fill the whole grid from `origin` over passable cells this asset
+        will enter. Unlike _reachable_home() this is not limited to the home
+        area, because a leg may legitimately cross unauthorised ground — it
+        answers only "can the asset physically walk there at all?".
+        """
+        seen, q = {origin}, deque([origin])
+        while q:
+            for nb in self.cfg.neighbours(q.popleft(), avoid=self.avoid):
+                if nb not in seen:
+                    seen.add(nb); q.append(nb)
+        return seen
+
+    def _prune_unreachable(self, waypoints):
+        """
+        Keep only waypoints walkable from the first one. Returns
+        (kept, dropped) so the caller can report the dropped cells.
+        """
+        if len(waypoints) < 2:
+            return waypoints, []
+        reachable = self._reachable_from(waypoints[0])
+        kept    = [w for w in waypoints if w in reachable]
+        dropped = [w for w in waypoints if w not in reachable]
+        return kept, dropped
 
     def _build_trajectory(self, n):
         """
@@ -477,9 +521,19 @@ class Asset:
 
     def describe(self) -> str:
         wp = " → ".join(self.waypoints[:6]) + ("…" if len(self.waypoints) > 6 else "")
-        return (f"{self.name[:20]:20} {self.type:9} "
-                f"{self.source:10} {self.style:7} home={len(self.home):3} "
-                f"wp={len(self.waypoints)}  [{wp}]")
+        out = (f"{self.name[:20]:20} {self.type:9} "
+               f"{self.source:10} {self.style:7} home={len(self.home):3} "
+               f"wp={len(self.waypoints)}  [{wp}]")
+        if self.blocked_wp:
+            out += ("\n" + " " * 24 + "⚠ route waypoint(s) on impassable cells, "
+                    f"skipped: {', '.join(self.blocked_wp)}")
+        if self.stranded:
+            out += ("\n" + " " * 24 + "⚠ waypoint(s) unreachable behind blocked "
+                    f"cells, dropped: {', '.join(self.stranded)}")
+        if len(self.waypoints) < 2:
+            out += ("\n" + " " * 24 + "⚠ fewer than 2 usable waypoints — "
+                    "asset will not move")
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

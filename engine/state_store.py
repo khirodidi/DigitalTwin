@@ -39,6 +39,10 @@ class StateStore:
         self._reg     = zone_registry
         self._assets  : dict[str, AssetState]        = {}
         self._asset_meta: dict[str, dict]            = {}   # id → {name, type}
+        # id → (allowed_sensors, allowed_zones). Kept separately from _assets
+        # because authorisations are loaded at startup, BEFORE any asset has
+        # reported a location — see set_asset_authorisations().
+        self._asset_auth: dict[str, tuple[set, set]] = {}
         self._sensors : dict[str, SensorState]       = {}
         self._health  : dict[str, SensorHealthState] = {}
 
@@ -87,6 +91,15 @@ class StateStore:
                       or self._asset_meta.get(asset_id, {}).get("name")
                       or asset_id)
 
+        # Authorisations come from the registry so they survive an asset's
+        # first location event; fall back to whatever the previous state held.
+        if asset_id in self._asset_auth:
+            sensors, zones = self._asset_auth[asset_id]
+            auth_sensors, auth_zones = set(sensors), set(zones)
+        else:
+            auth_sensors = set(prev.allowed_sensors) if prev else set()
+            auth_zones   = set(prev.allowed_zones)   if prev else set()
+
         state = AssetState(
             id                   = asset_id,
             asset_type           = asset_type,
@@ -96,8 +109,8 @@ class StateStore:
             previous_zone_id     = prev.current_zone_id   if prev else None,
             time_change_location = timestamp if changed else
                                    (prev.time_change_location if prev else timestamp),
-            allowed_sensors      = prev.allowed_sensors if prev else set(),
-            allowed_zones        = prev.allowed_zones   if prev else set(),
+            allowed_sensors      = auth_sensors,
+            allowed_zones        = auth_zones,
             name                 = asset_name,
         )
         # Access status — never UNKNOWN unless sensor is genuinely OFFLINE
@@ -151,9 +164,25 @@ class StateStore:
 
     def set_asset_authorisations(self, asset_id: str,
                                   allowed_sensors: set, allowed_zones: set):
+        """
+        Record what an asset may access.
+
+        Stored in _asset_auth rather than only on the live AssetState: this is
+        called at engine startup and from the config API, both of which can run
+        before the asset has ever reported a location. Guarding on
+        `asset_id in self._assets` silently dropped every authorisation loaded
+        at startup, leaving allowed_zones empty and marking every asset a
+        VIOLATION — the "violation storm" that bulk-authorise worked around.
+        """
+        self._asset_auth[asset_id] = (set(allowed_sensors), set(allowed_zones))
         if asset_id in self._assets:
-            self._assets[asset_id].allowed_sensors = allowed_sensors
-            self._assets[asset_id].allowed_zones   = allowed_zones
+            self._assets[asset_id].allowed_sensors = set(allowed_sensors)
+            self._assets[asset_id].allowed_zones   = set(allowed_zones)
+            # Authorisations changed — recompute against the current sensor
+            health = self._health.get(self._assets[asset_id].current_sensor_id)
+            if health:
+                self._assets[asset_id].access_status = \
+                    self._assets[asset_id].compute_access_status(health)
 
     # ── Expose health dict (passed to watchdog) ───────────────────────────────
     @property
