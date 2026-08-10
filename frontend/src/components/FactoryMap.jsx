@@ -15,6 +15,7 @@ const PALETTE = ["#14b8a6","#3b82f6","#8b5cf6","#f59e0b",
                  "#ec4899","#ef4444","#22c55e","#f97316"];
 const AICON  = { worker:"👷", forklift:"🚜", pallet:"📦", object:"📍" };
 const SHADOW = "0 1px 3px rgba(0,0,0,0.95)";
+const STAGE3D_SCALE = 0.82;
 
 export default function FactoryMap({
   sensors, health, assets, cols = 6, rows = 5,
@@ -252,7 +253,7 @@ export default function FactoryMap({
 
   // ── Shared 3D stage ──────────────────────────────────────────────────────
   function Stage3D({ maxH = "calc(100vh - 260px)" }) {
-    const SCALE = 0.82;
+    const SCALE = STAGE3D_SCALE;
     const W = svgW * SCALE, H = svgH * SCALE;
     // Layers sit at most ~1 sensor width above the plane below them
     const LAYER_GAP = Math.round(CELL * SCALE * 0.5);
@@ -437,11 +438,12 @@ export default function FactoryMap({
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 20,
           display: "flex", alignItems: "flex-start", justifyContent: "center" }}>
           {view === "3d"
-            ? <div style={{ transform: `scale(${Math.min(scale * 1.15, 1.9)})`,
+            ? <div style={{ width: svgW * STAGE3D_SCALE,
+                transform: `scale(${Math.min(scale * 1.15, 1.9)})`,
                 transformOrigin: "top center" }}>
-                <Stage3D maxH="none" />
+                {Stage3D({ maxH: "none" })}
               </div>
-            : <Scene2D width={svgW * Math.max(scale, 0.5)} withNames />}
+            : Scene2D({ width: svgW * Math.max(scale, 0.5), withNames: true })}
         </div>
 
         {/* Asset roster */}
@@ -480,12 +482,19 @@ export default function FactoryMap({
       onClose={() => setSelected(null)} />
   );
 
+  // NOTE: Toolbar/Scene2D/Stage3D/FullscreenView are called as plain
+  // functions, not rendered as JSX components (<Scene2D/>). They are
+  // declared inside this component body, so a JSX call would give React a
+  // new component type on every render — remounting the scrollable subtree
+  // and resetting scroll position on every state update. Calling them as
+  // functions inlines their returned elements instead, so React can diff
+  // normally and scroll position survives re-renders.
   if (view === "3d") {
     return (
       <>
-        <Toolbar />
-        <Stage3D />
-        {fullscreen && <FullscreenView />}
+        {Toolbar()}
+        {Stage3D({})}
+        {fullscreen && FullscreenView()}
         {detail}
       </>
     );
@@ -493,12 +502,12 @@ export default function FactoryMap({
 
   return (
     <>
-      <Toolbar />
+      {Toolbar()}
       <div style={{ width: "100%", overflow: "auto",
         maxHeight: "calc(100vh - 260px)" }}>
-        <Scene2D width={svgW * zoom} />
+        {Scene2D({ width: svgW * zoom })}
       </div>
-      {fullscreen && <FullscreenView />}
+      {fullscreen && FullscreenView()}
       {detail}
     </>
   );
