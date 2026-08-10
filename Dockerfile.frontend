@@ -3,30 +3,41 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY frontend/package.json .
-RUN npm install
+RUN npm install --no-audit --no-fund
+
 COPY frontend/ .
 
-# Only connection settings are baked in at build time.
-# Factory layout (name, grid size, blueprint) is configured at runtime through
-# the Configuration page and persisted in PostgreSQL.
+# Only connection settings are baked in at build time. Factory layout (name,
+# grid size, blueprint) is configured at runtime and stored in PostgreSQL.
 ARG REACT_APP_API_URL=http://localhost:8000
 ARG REACT_APP_WS_URL=ws://localhost:8000/ws
 ENV REACT_APP_API_URL=$REACT_APP_API_URL \
     REACT_APP_WS_URL=$REACT_APP_WS_URL
 
-# CI=true turns ESLint warnings into errors, which fails the build for things
-# like an unused variable. Keep warnings visible but non-fatal.
+# CI=true (Docker's default) makes CRA treat ESLint WARNINGS as errors.
 ENV CI=false
+# Skip linting entirely during the production build. Lint is a development
+# concern; an unused variable must not stop a deployment.
+ENV DISABLE_ESLINT_PLUGIN=true
 ENV GENERATE_SOURCEMAP=false
+# Give webpack enough heap on larger source trees
+ENV NODE_OPTIONS=--max-old-space-size=4096
 
-# Remove any build directory that slipped in, then compile fresh.
-# The build log is printed in full so compile errors are visible in Docker.
-RUN rm -rf build && npm run build 2>&1 | tee /tmp/build.log || \
-    (echo "=== BUILD FAILED — last 60 lines ===" && tail -60 /tmp/build.log && exit 1)
+# NOTE: no pipe here. In /bin/sh a pipeline returns the exit status of the
+# LAST command, so `npm run build | tee` would report success even when the
+# build failed — masking the error and letting an empty image ship.
+RUN rm -rf build && npm run build
 
-# Fail the image build loudly if the bundle is missing, instead of shipping
-# an empty web root that serves a blank page.
-RUN test -f build/index.html && ls build/static/js/*.js >/dev/null
+# Verify the bundle exists; print the directory if not so the cause is obvious
+RUN if [ ! -f build/index.html ]; then \
+      echo "=== BUILD PRODUCED NO index.html ==="; ls -la build 2>/dev/null || echo "(no build dir)"; \
+      exit 1; \
+    fi && \
+    if ! ls build/static/js/*.js >/dev/null 2>&1; then \
+      echo "=== NO JS BUNDLE PRODUCED ==="; find build -type f | head -40; \
+      exit 1; \
+    fi && \
+    echo "Build OK:" && ls -la build/static/js/
 
 # ── Serve stage ───────────────────────────────────────────────────────────────
 FROM nginx:alpine

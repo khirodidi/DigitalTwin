@@ -34,7 +34,6 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
   const [traj,     setTraj]     = useState([]);
   const [filter,   setFilter]   = useState("all");
 
-  const cols = Math.max(...sensors.map(s => (s.grid_col ?? 0) + 1), 1);
   const zoneColor = zid => PALETTE[Math.max(0, zones.findIndex(z=>z.zone_id===zid)) % PALETTE.length];
   const sensorZone = {};
   zones.forEach(z => (z.sensor_ids||[]).forEach(s => { sensorZone[s] = z.zone_id; }));

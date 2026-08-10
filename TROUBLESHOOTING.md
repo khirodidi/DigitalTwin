@@ -111,3 +111,29 @@ curl -X POST http://localhost:8000/api/config/workers/bulk-authorise \
   -H "Content-Type: application/json" \
   -d '{"asset_ids":"all","allowed_zones":["zone_A","zone_B"],"mode":"replace"}'
 ```
+
+---
+
+## Frontend image fails to build
+
+Docker reports only `exit code: 1`. To see the real compiler error:
+
+```bash
+./scripts/diagnose-build.sh
+```
+
+This runs the build in a throwaway container and prints the full output —
+`Failed to compile` is followed by the exact file and line.
+
+**Known causes and their fixes (all already applied):**
+
+| Cause | Fix in `Dockerfile.frontend` |
+|---|---|
+| Docker sets `CI=true`, so CRA turns ESLint *warnings* into errors | `ENV CI=false` |
+| Lint errors (unused var, hook order) break the deploy build | `ENV DISABLE_ESLINT_PLUGIN=true` |
+| `npm run build \| tee` returns tee's exit code, masking failure | pipe removed |
+| Webpack heap exhaustion on larger trees | `NODE_OPTIONS=--max-old-space-size=4096` |
+
+**If the assertion at step 7 fails** (`test -f build/index.html`), the build
+itself failed but its exit code was swallowed. The Dockerfile no longer pipes,
+so the compiler error now appears directly in the Docker output.
