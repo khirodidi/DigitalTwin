@@ -353,7 +353,13 @@ class Asset:
         self.violations = 0
         self.moves      = 0
 
-        self.sensor = self.waypoints[0] if self.waypoints else self._any_passable()
+        self.sensor, self.start_kind = self._initial_position()
+        # When the asset does NOT begin on its first waypoint it still has to
+        # walk there, so seed the index one step back: _plan_next_leg()
+        # advances before choosing a target, and would otherwise skip
+        # waypoint 0 entirely.
+        if self.waypoints and self.sensor != self.waypoints[0]:
+            self.wp_index = -1
         self._plan_next_leg()
 
     # ── Territory ────────────────────────────────────────────────────────────
@@ -374,6 +380,37 @@ class Asset:
     def _any_passable(self):
         p = [s for s in self.cfg.all_sids() if self.cfg.passable(s)]
         return random.choice(p) if p else self.cfg.sid(0, 0)
+
+    # ── Where the asset is when the simulation starts ────────────────────────
+
+    def _initial_position(self):
+        """
+        Return (sensor_id, description).
+
+        A worker arrives through a door, so it starts on an `exit` cell inside
+        its authorised area and walks to its first waypoint from there.
+        Forklifts and pallets are already parked on the floor when the shift
+        begins, so they start on the first cell of their own trajectory.
+
+        Falls back in order: exit inside the authorised area → any passable
+        exit on the floor → first waypoint → any passable cell. The fallbacks
+        matter because a factory need not have an exit inside every zone.
+        """
+        if self.type == "worker":
+            home = set(self.home)
+            inside = [s for s in home if self.cfg.ctype(s) == "exit"]
+            if inside:
+                return random.choice(inside), "exit (authorised)"
+            anywhere = [s for s in self.cfg.all_sids()
+                        if self.cfg.ctype(s) == "exit" and self.cfg.passable(s)]
+            if anywhere:
+                # Outside the authorised area: realistic (staff entrance shared
+                # between zones) and the walk home is routed via `prefer=home`.
+                return random.choice(anywhere), "exit (outside zone)"
+
+        if self.waypoints:
+            return self.waypoints[0], "trajectory start"
+        return self._any_passable(), "fallback"
 
     # ── Trajectory construction ──────────────────────────────────────────────
 
@@ -573,7 +610,8 @@ class Asset:
         wp = " → ".join(self.waypoints[:6]) + ("…" if len(self.waypoints) > 6 else "")
         out = (f"{self.name[:20]:20} {self.type:9} "
                f"{self.source:10} {self.style:7} home={len(self.home):3} "
-               f"wp={len(self.waypoints)}  [{wp}]")
+               f"wp={len(self.waypoints)}  start={self.sensor} "
+               f"({self.start_kind})  [{wp}]")
         if self.station:
             st = ", ".join(f"{s}({self.station_w.get(s,0):.0%})"
                            for s in sorted(self.station,

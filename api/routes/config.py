@@ -49,6 +49,11 @@ def _refresh_engine(section: str):
         if section in ("zones", "authorisations", "workers", "grid", "all"):
             if hasattr(engine, "reload_authorisations"):
                 engine.reload_authorisations()
+        # Display names are cached in the StateStore, so an asset added or
+        # renamed here would otherwise keep showing its raw ID on the dashboard.
+        if section in ("workers", "all"):
+            if hasattr(engine, "reload_asset_meta"):
+                engine.reload_asset_meta()
     except Exception:
         pass
 

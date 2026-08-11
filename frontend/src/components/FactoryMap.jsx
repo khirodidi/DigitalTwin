@@ -27,6 +27,21 @@ export default function FactoryMap({
   const [fullscreen, setFullscreen] = useState(false);
   const [zoom,       setZoom]       = useState(1);
 
+  // Live viewport size. This hook lives here, at the top level, and NOT inside
+  // FullscreenView: that function is called conditionally
+  // (`fullscreen && FullscreenView()`), so a hook inside it would change the
+  // hook count between renders and unmount the tree.
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth  : 1600,
+    h: typeof window !== "undefined" ? window.innerHeight : 900,
+  }));
+  useEffect(() => {
+    const onResize = () =>
+      setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // ── Lookups ──────────────────────────────────────────────────────────────
   const sensorMap = useMemo(() => Object.fromEntries(
     (sensors || []).map(s => [s.sensor_id, s])), [sensors]);
@@ -257,12 +272,18 @@ export default function FactoryMap({
   }
 
   // ── Shared 3D stage ──────────────────────────────────────────────────────
-  function Stage3D({ maxH = "calc(100vh - 260px)" }) {
+  // Natural (unscaled) geometry of the 3D stage. Shared with the full-screen
+  // wrapper so the two cannot disagree about how tall the stage really is.
+  const stage3D = () => {
     const SCALE = STAGE3D_SCALE;
     const W = svgW * SCALE, H = svgH * SCALE;
-    // Layers sit at most ~1 sensor width above the plane below them
     const LAYER_GAP = Math.round(CELL * SCALE * 0.5);
-    const stageH = H * 0.72 + LAYER_GAP * 2 + 120;
+    return { SCALE, W, H, LAYER_GAP, stageH: H * 0.72 + LAYER_GAP * 2 + 120 };
+  };
+
+  function Stage3D({ maxH = "calc(100vh - 260px)" }) {
+    // Layers sit at most ~1 sensor width above the plane below them
+    const { SCALE, W, H, LAYER_GAP, stageH } = stage3D();
 
     const plate = (children, lift, z) => (
       <div style={{
@@ -406,9 +427,12 @@ export default function FactoryMap({
 
   // ── Full screen — full detail, honouring the current mode ────────────────
   function FullscreenView() {
-    const vw = typeof window !== "undefined" ? window.innerWidth  : 1600;
-    const vh = typeof window !== "undefined" ? window.innerHeight : 900;
-    const scale = Math.min((vw - 60) / svgW, (vh - 200) / svgH);
+    // The factory occupies 90 % of the viewport width in both modes, leaving a
+    // 5 % gutter each side. Width is the governing dimension; if the result is
+    // taller than the viewport the content area scrolls vertically.
+    const targetW = Math.round(viewport.w * 0.9);
+    const s3 = stage3D();
+    const stageScale = targetW / s3.W;      // 3D stage is sized in px, so scale it
 
     return (
       <div style={{ position: "fixed", inset: 0, zIndex: 200,
@@ -440,15 +464,23 @@ export default function FactoryMap({
           </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 20,
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "20px 0",
           display: "flex", alignItems: "flex-start", justifyContent: "center" }}>
           {view === "3d"
-            ? <div style={{ width: svgW * STAGE3D_SCALE,
-                transform: `scale(${Math.min(scale * 1.15, 1.9)})`,
-                transformOrigin: "top center" }}>
-                {Stage3D({ maxH: "none" })}
-              </div>
-            : Scene2D({ width: svgW * Math.max(scale, 0.5), withNames: true })}
+            ? (
+                // transform: scale() does not change layout size, so the outer
+                // box reserves the SCALED height explicitly — without it the
+                // stage would overlap the asset roster below.
+                <div style={{ width: targetW, flexShrink: 0,
+                              height: s3.stageH * stageScale }}>
+                  <div style={{ width: s3.W, height: s3.stageH,
+                                transform: `scale(${stageScale})`,
+                                transformOrigin: "top left" }}>
+                    {Stage3D({ maxH: "none" })}
+                  </div>
+                </div>
+              )
+            : Scene2D({ width: targetW, withNames: true })}
         </div>
 
         {/* Asset roster */}
