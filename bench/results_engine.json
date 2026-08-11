@@ -1,0 +1,204 @@
+{
+  "meta": {
+    "measured_at": "2026-08-11T10:13:23.732310Z",
+    "python": "3.11.15",
+    "note": "All values measured by executing the shipped engine code."
+  },
+  "access_control": {
+    "cases": [
+      {
+        "case": "explicit sensor grant",
+        "expected": "AccessStatus.AUTHORISED",
+        "actual": "AccessStatus.AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "zone grant -> member sensor",
+        "expected": "AccessStatus.AUTHORISED",
+        "actual": "AccessStatus.AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "zone grant -> second member sensor",
+        "expected": "AccessStatus.AUTHORISED",
+        "actual": "AccessStatus.AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "sensor outside granted zone",
+        "expected": "AccessStatus.VIOLATION",
+        "actual": "AccessStatus.VIOLATION",
+        "pass": true
+      },
+      {
+        "case": "no authorisation",
+        "expected": "AccessStatus.VIOLATION",
+        "actual": "AccessStatus.VIOLATION",
+        "pass": true
+      },
+      {
+        "case": "offline sensor, unauthorised",
+        "expected": "AccessStatus.UNKNOWN",
+        "actual": "AccessStatus.UNKNOWN",
+        "pass": true
+      },
+      {
+        "case": "offline sensor, authorised",
+        "expected": "AccessStatus.UNKNOWN",
+        "actual": "AccessStatus.UNKNOWN",
+        "pass": true
+      },
+      {
+        "case": "grant precedes first location event",
+        "expected": "AccessStatus.AUTHORISED",
+        "actual": "AccessStatus.AUTHORISED",
+        "pass": true
+      },
+      {
+        "case": "live grant recomputes",
+        "expected": "(<AccessStatus.VIOLATION: 'violation'>, <AccessStatus.AUTHORISED: 'authorised'>)",
+        "actual": "(<AccessStatus.VIOLATION: 'violation'>, <AccessStatus.AUTHORISED: 'authorised'>)",
+        "pass": true
+      }
+    ],
+    "passed": 9,
+    "total": 9
+  },
+  "latency_inmemory": {
+    "env": {
+      "n_samples": 25000,
+      "runs": 5,
+      "mean": 0.0328,
+      "std": 0.0092,
+      "p50": 0.0294,
+      "p95": 0.0536,
+      "p99": 0.069,
+      "max": 0.1543,
+      "run_means": [
+        0.0325,
+        0.0316,
+        0.0321,
+        0.0333,
+        0.0346
+      ],
+      "ci95_of_mean_over_runs": [
+        0.0318,
+        0.0339
+      ]
+    },
+    "loc": {
+      "n_samples": 25000,
+      "runs": 5,
+      "mean": 0.0287,
+      "std": 0.0082,
+      "p50": 0.0257,
+      "p95": 0.0475,
+      "p99": 0.0625,
+      "max": 0.173,
+      "run_means": [
+        0.0284,
+        0.0276,
+        0.0282,
+        0.0291,
+        0.0301
+      ],
+      "ci95_of_mean_over_runs": [
+        0.0278,
+        0.0295
+      ]
+    }
+  },
+  "latency_with_postgres": {
+    "env": {
+      "n_samples": 6000,
+      "runs": 3,
+      "mean": 0.0422,
+      "std": 0.0128,
+      "p50": 0.0374,
+      "p95": 0.07,
+      "p99": 0.0876,
+      "max": 0.2586,
+      "run_means": [
+        0.0422,
+        0.0432,
+        0.0411
+      ],
+      "ci95_of_mean_over_runs": [
+        0.041,
+        0.0434
+      ]
+    },
+    "loc": {
+      "n_samples": 6000,
+      "runs": 3,
+      "mean": 0.0786,
+      "std": 0.0237,
+      "p50": 0.0692,
+      "p95": 0.1268,
+      "p99": 0.1697,
+      "max": 0.317,
+      "run_means": [
+        0.0791,
+        0.0811,
+        0.0756
+      ],
+      "ci95_of_mean_over_runs": [
+        0.0755,
+        0.0817
+      ]
+    }
+  },
+  "scalability": [
+    {
+      "grid": "4x3",
+      "sensors": 12,
+      "assets": 4,
+      "mean_ms": 0.0194,
+      "p99_ms": 0.0463,
+      "max_msgs_per_s_singlethread": 51546.4
+    },
+    {
+      "grid": "6x5",
+      "sensors": 30,
+      "assets": 10,
+      "mean_ms": 0.0319,
+      "p99_ms": 0.0654,
+      "max_msgs_per_s_singlethread": 31348.0
+    },
+    {
+      "grid": "10x8",
+      "sensors": 80,
+      "assets": 26,
+      "mean_ms": 0.0666,
+      "p99_ms": 0.1325,
+      "max_msgs_per_s_singlethread": 15015.0
+    },
+    {
+      "grid": "15x12",
+      "sensors": 180,
+      "assets": 60,
+      "mean_ms": 0.1295,
+      "p99_ms": 0.2367,
+      "max_msgs_per_s_singlethread": 7722.0
+    }
+  ],
+  "false_violations_during_outage": {
+    "decisions": 45,
+    "false_violations": 0,
+    "unknown": 45
+  },
+  "spof": {
+    "n_sensors": 30,
+    "heartbeat_interval_s": 5,
+    "outage_start_s": 10.03,
+    "outage_duration_s": 45.0,
+    "outage_end_s": 55.04,
+    "first_degraded_after_outage_s": 9.98,
+    "first_offline_after_outage_s": 24.99,
+    "all_offline_after_outage_s": 24.99,
+    "sensors_declared_offline": 30,
+    "recovery_all_online_after_reconnect_s": 0.0,
+    "sensors_recovered": 30,
+    "total_alerts": 90
+  }
+}

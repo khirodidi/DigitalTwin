@@ -1,0 +1,330 @@
+{
+  "meta": {
+    "measured_at": "2026-08-11T10:13:19.212720Z",
+    "n_runs": 20,
+    "note": "All values measured by training/evaluating on this machine."
+  },
+  "anomaly": {
+    "lstm_ae": {
+      "auc": {
+        "mean": 0.9983,
+        "std": 0.0008,
+        "ci95": [
+          0.9979,
+          0.9986
+        ]
+      },
+      "f1": {
+        "mean": 0.8385,
+        "std": 0.0006,
+        "ci95": [
+          0.8383,
+          0.8388
+        ]
+      },
+      "prec": {
+        "mean": 0.7221,
+        "std": 0.0002,
+        "ci95": [
+          0.722,
+          0.7222
+        ]
+      },
+      "rec": {
+        "mean": 0.9996,
+        "std": 0.0012,
+        "ci95": [
+          0.9991,
+          1.0001
+        ]
+      },
+      "train_time_s": 1.49,
+      "inference_time_ms": 0.951
+    },
+    "iso_forest": {
+      "auc": {
+        "mean": 0.8431,
+        "std": 0.0178,
+        "ci95": [
+          0.8353,
+          0.8509
+        ]
+      },
+      "f1": {
+        "mean": 0.3127,
+        "std": 0.0532,
+        "ci95": [
+          0.2894,
+          0.3361
+        ]
+      },
+      "prec": {
+        "mean": 0.3978,
+        "std": 0.0495,
+        "ci95": [
+          0.3761,
+          0.4195
+        ]
+      },
+      "rec": {
+        "mean": 0.2583,
+        "std": 0.0516,
+        "ci95": [
+          0.2357,
+          0.2809
+        ]
+      }
+    },
+    "ocsvm": {
+      "auc": {
+        "mean": 0.6273,
+        "std": 0.0247,
+        "ci95": [
+          0.6165,
+          0.6382
+        ]
+      },
+      "f1": {
+        "mean": 0.2859,
+        "std": 0.0375,
+        "ci95": [
+          0.2695,
+          0.3023
+        ]
+      },
+      "prec": {
+        "mean": 0.3739,
+        "std": 0.0359,
+        "ci95": [
+          0.3582,
+          0.3897
+        ]
+      },
+      "rec": {
+        "mean": 0.2317,
+        "std": 0.0354,
+        "ci95": [
+          0.2162,
+          0.2473
+        ]
+      }
+    },
+    "threshold": {
+      "auc": {
+        "mean": 0.5,
+        "std": 0.0,
+        "ci95": [
+          0.5,
+          0.5
+        ]
+      },
+      "f1": {
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ]
+      },
+      "prec": {
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ]
+      },
+      "rec": {
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "_tests": {
+      "lstm_ae_vs_iso_forest": {
+        "statistic": 0.0,
+        "p": 1.9073486328125e-06,
+        "median_diff": 0.1557
+      },
+      "lstm_ae_vs_ocsvm": {
+        "statistic": 0.0,
+        "p": 1.9073486328125e-06,
+        "median_diff": 0.3701
+      },
+      "lstm_ae_vs_threshold": {
+        "statistic": 0.0,
+        "p": 8.844915021211901e-05,
+        "median_diff": 0.4985
+      }
+    },
+    "_n_runs": 20,
+    "_min_attainable_p": 1.9073486328125e-06
+  },
+  "evacuation": {
+    "radial": {
+      "proposed_success": {
+        "mean": 0.95,
+        "std": 0.0151,
+        "ci95": [
+          0.9434,
+          0.9566
+        ]
+      },
+      "shortest_success": {
+        "mean": 0.8878,
+        "std": 0.0252,
+        "ci95": [
+          0.8767,
+          0.8988
+        ]
+      },
+      "proposed_mean_danger": {
+        "mean": 0.2054,
+        "std": 0.013,
+        "ci95": [
+          0.1997,
+          0.2111
+        ]
+      },
+      "shortest_mean_danger": {
+        "mean": 0.2772,
+        "std": 0.0215,
+        "ci95": [
+          0.2677,
+          0.2866
+        ]
+      },
+      "wilcoxon_success": {
+        "statistic": 0.0,
+        "p": 8.794879347050151e-05,
+        "median_diff": 0.065
+      },
+      "trained_on": "radial",
+      "cross_model": false
+    },
+    "corridor": {
+      "proposed_success": {
+        "mean": 0.9453,
+        "std": 0.014,
+        "ci95": [
+          0.9391,
+          0.9514
+        ]
+      },
+      "shortest_success": {
+        "mean": 0.8688,
+        "std": 0.0269,
+        "ci95": [
+          0.857,
+          0.8805
+        ]
+      },
+      "proposed_mean_danger": {
+        "mean": 0.1103,
+        "std": 0.0092,
+        "ci95": [
+          0.1063,
+          0.1144
+        ]
+      },
+      "shortest_mean_danger": {
+        "mean": 0.1781,
+        "std": 0.0162,
+        "ci95": [
+          0.171,
+          0.1853
+        ]
+      },
+      "wilcoxon_success": {
+        "statistic": 0.0,
+        "p": 8.769942375590214e-05,
+        "median_diff": 0.0825
+      },
+      "trained_on": "radial",
+      "cross_model": true
+    },
+    "corner": {
+      "proposed_success": {
+        "mean": 0.874,
+        "std": 0.0149,
+        "ci95": [
+          0.8675,
+          0.8805
+        ]
+      },
+      "shortest_success": {
+        "mean": 0.8017,
+        "std": 0.0272,
+        "ci95": [
+          0.7898,
+          0.8137
+        ]
+      },
+      "proposed_mean_danger": {
+        "mean": 0.2937,
+        "std": 0.0161,
+        "ci95": [
+          0.2867,
+          0.3008
+        ]
+      },
+      "shortest_mean_danger": {
+        "mean": 0.3698,
+        "std": 0.021,
+        "ci95": [
+          0.3606,
+          0.379
+        ]
+      },
+      "wilcoxon_success": {
+        "statistic": 0.0,
+        "p": 8.572377593819394e-05,
+        "median_diff": 0.07
+      },
+      "trained_on": "radial",
+      "cross_model": true
+    },
+    "_n_runs": 20
+  },
+  "model5": {
+    "n_runs": 20,
+    "shifts_per_run": 10,
+    "ticks_per_shift": 400,
+    "station_jaccard_vs_configured": {
+      "mean": 0.8925,
+      "std": 0.1353,
+      "ci95": [
+        0.8332,
+        0.9518
+      ]
+    },
+    "station_cell_recall": {
+      "mean": 1.0,
+      "std": 0.0,
+      "ci95": [
+        1.0,
+        1.0
+      ]
+    },
+    "station_confidence": {
+      "mean": 0.8549,
+      "std": 0.0568,
+      "ci95": [
+        0.8299,
+        0.8798
+      ]
+    },
+    "route_jaccard_vs_simulator_waypoints": {
+      "mean": 0.615,
+      "std": 0.1195,
+      "ci95": [
+        0.5626,
+        0.6674
+      ]
+    },
+    "note": "Ground truth is the station/route configured in the simulator that generated the movement."
+  }
+}
