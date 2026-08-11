@@ -87,8 +87,12 @@ class StateStore:
         # Preserve asset_type and display name from previous state / registry
         asset_type = (prev.asset_type if prev and prev.asset_type != "unknown"
                       else self._asset_meta.get(asset_id, {}).get("type", "worker"))
-        asset_name = ((prev.name if prev and prev.name else None)
-                      or self._asset_meta.get(asset_id, {}).get("name")
+        # The registry wins over whatever the live state happens to hold: an
+        # asset first seen on MQTT before the operator named it caches its own
+        # id as a name, and that stale value would otherwise outrank the real
+        # name for the lifetime of the process.
+        asset_name = (self._asset_meta.get(asset_id, {}).get("name")
+                      or (prev.name if prev and prev.name else None)
                       or asset_id)
 
         # Authorisations come from the registry so they survive an asset's

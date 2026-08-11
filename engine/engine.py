@@ -345,6 +345,26 @@ class DigitalTwinEngine:
         except Exception as e:
             logger.warning(f"Authorisation reload failed: {e}")
 
+    def reload_asset_meta(self):
+        """
+        Re-read asset display names and types from the database.
+
+        Names are pushed to the dashboard on every asset_update, but the engine
+        caches them in the StateStore. Without this reload an asset created or
+        renamed in the Configuration page after startup keeps whatever the
+        engine learned at boot — which for a newly created asset is nothing, so
+        the dashboard falls back to showing its raw ID.
+        """
+        try:
+            from persistence.postgres import load_asset_meta
+            meta = load_asset_meta()
+            for aid, m in meta.items():
+                self._store.set_asset_meta(aid, m["name"], m["asset_type"])
+            self._known_assets = set(meta.keys())
+            logger.info(f"Asset names reloaded ({len(meta)} assets).")
+        except Exception as e:
+            logger.warning(f"Asset name reload failed: {e}")
+
     def reload_ai_models(self):
         from pathlib import Path
         MODEL_DIR = Path("models")
