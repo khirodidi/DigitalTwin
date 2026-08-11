@@ -1,7 +1,8 @@
 # =============================================================================
 # api/routes/config.py
 # Configuration endpoints — factory layout, blueprint upload, sensors,
-# zones (defined by their sensors), workers, authorisations, trajectory.
+# zones (defined by their sensors), workers, authorisations, trajectory,
+# working station.
 #
 # Every mutating endpoint broadcasts a `config_updated` WebSocket event so the
 # monitoring dashboard refreshes immediately without a page reload.
@@ -106,6 +107,10 @@ class WorkerBody(BaseModel):
     asset_type:         str = "worker"
     name:               str
     default_trajectory: list[str] = []   # ordered sensors the asset works at
+    # Working station — the UNORDERED set of sensors the asset works at most of
+    # the time. None means "leave whatever is stored alone", so a client that
+    # does not know about stations cannot wipe one; [] explicitly clears it.
+    station:            Optional[list[str]] = None
 
 class AuthBody(BaseModel):
     allowed_zones:   list[str] = []
@@ -500,7 +505,34 @@ def get_workers():
                      AS trajectory_source,
                    COALESCE((SELECT act.version FROM asset_trajectory_active act
                              WHERE act.asset_id = a.asset_id), 1)
-                     AS trajectory_version
+                     AS trajectory_version,
+                   -- Working station: unordered set, heaviest cell first so the
+                   -- UI can show the primary cell without re-sorting.
+                   COALESCE((
+                     SELECT json_agg(st.sensor_id ORDER BY st.weight DESC,
+                                                           st.sensor_id)
+                     FROM asset_station st
+                     JOIN asset_station_active sact
+                       ON sact.asset_id = st.asset_id
+                      AND sact.source   = st.source
+                      AND sact.version  = st.version
+                     WHERE st.asset_id = a.asset_id
+                   ), '[]') AS station,
+                   COALESCE((
+                     SELECT json_object_agg(st.sensor_id, st.weight)
+                     FROM asset_station st
+                     JOIN asset_station_active sact
+                       ON sact.asset_id = st.asset_id
+                      AND sact.source   = st.source
+                      AND sact.version  = st.version
+                     WHERE st.asset_id = a.asset_id
+                   ), '{}') AS station_weights,
+                   COALESCE((SELECT sact.source FROM asset_station_active sact
+                             WHERE sact.asset_id = a.asset_id), 'configured')
+                     AS station_source,
+                   COALESCE((SELECT sact.version FROM asset_station_active sact
+                             WHERE sact.asset_id = a.asset_id), 1)
+                     AS station_version
             FROM assets a
             ORDER BY a.asset_type, a.asset_id
         """)
@@ -539,6 +571,8 @@ async def create_worker(body: WorkerBody):
               SET asset_type = EXCLUDED.asset_type, name = EXCLUDED.name
         """, (body.asset_id, body.asset_type, body.name))
         _write_trajectory(cur, body.asset_id, body.default_trajectory)
+        if body.station is not None:
+            _write_station(cur, body.asset_id, body.station)
     conn.commit()
     await _notify("workers", {"asset_id": body.asset_id})
     return {"status": "saved", "asset_id": body.asset_id}
@@ -571,6 +605,38 @@ def _write_trajectory(cur, asset_id: str, sensors: list[str],
                 (asset_id, source, version))
 
 
+def _write_station(cur, asset_id: str, sensors: list[str],
+                   source: str = "configured", confidence: float = 1.0,
+                   weights: dict = None):
+    """
+    Store a working-station version and make it active.
+
+    The station is an unordered SET, so duplicates in `sensors` are collapsed.
+    `weights` maps sensor_id → share of dwell time (0..1); when omitted every
+    cell is weighted equally, which is the right default for an operator who
+    is naming a station rather than measuring one.
+    """
+    cur.execute("""SELECT COALESCE(MAX(version),0)+1 FROM asset_station
+                   WHERE asset_id=%s AND source=%s""", (asset_id, source))
+    version = cur.fetchone()[0]
+
+    unique = list(dict.fromkeys(sensors or []))     # de-dupe, keep first order
+    default_w = round(1.0 / len(unique), 6) if unique else 1.0
+    for sid in unique:
+        cur.execute("""INSERT INTO asset_station
+                         (asset_id, sensor_id, source, version, weight, confidence)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (asset_id, sid, source, version,
+                     (weights or {}).get(sid, default_w), confidence))
+
+    cur.execute("""INSERT INTO asset_station_active (asset_id, source, version)
+                   VALUES (%s,%s,%s)
+                   ON CONFLICT (asset_id) DO UPDATE
+                     SET source=EXCLUDED.source, version=EXCLUDED.version,
+                         updated_at=NOW()""",
+                (asset_id, source, version))
+
+
 @router.put("/workers/{asset_id}")
 async def update_worker(asset_id: str, body: WorkerBody):
     conn = get_conn()
@@ -578,6 +644,8 @@ async def update_worker(asset_id: str, body: WorkerBody):
         cur.execute("UPDATE assets SET asset_type=%s, name=%s WHERE asset_id=%s",
                     (body.asset_type, body.name, asset_id))
         _write_trajectory(cur, asset_id, body.default_trajectory)
+        if body.station is not None:
+            _write_station(cur, asset_id, body.station)
     conn.commit()
     await _notify("workers", {"asset_id": asset_id})
     return {"status": "updated"}
@@ -588,6 +656,7 @@ async def delete_worker(asset_id: str):
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM asset_trajectory WHERE asset_id=%s", (asset_id,))
+        cur.execute("DELETE FROM asset_station    WHERE asset_id=%s", (asset_id,))
         cur.execute("DELETE FROM authorisations WHERE asset_id=%s", (asset_id,))
         cur.execute("DELETE FROM assets WHERE asset_id=%s", (asset_id,))
     conn.commit()
@@ -730,6 +799,55 @@ async def set_active_trajectory(asset_id: str, body: dict):
                              updated_at=NOW()""", (asset_id, src, ver))
     conn.commit()
     await _notify("workers", {"asset_id": asset_id, "trajectory": f"{src} v{ver}"})
+    return {"status": "active", "source": src, "version": ver}
+
+
+@router.get("/workers/{asset_id}/station-versions")
+def station_versions(asset_id: str):
+    """
+    Every stored working station for this asset — the operator's initial set
+    plus each version model ⑤ has learned since, with the active one flagged.
+    """
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT source, version, MIN(created_at) AS created_at,
+                   MAX(confidence) AS confidence,
+                   array_agg(sensor_id ORDER BY weight DESC, sensor_id) AS sensors,
+                   json_object_agg(sensor_id, weight) AS weights
+            FROM asset_station WHERE asset_id=%s
+            GROUP BY source, version
+            ORDER BY MIN(created_at) DESC
+        """, (asset_id,))
+        versions = cur.fetchall()
+        cur.execute("""SELECT source, version FROM asset_station_active
+                       WHERE asset_id=%s""", (asset_id,))
+        act = cur.fetchone()
+    for v in versions:
+        v["active"] = bool(act and v["source"] == act["source"]
+                           and v["version"] == act["version"])
+    return versions
+
+
+@router.put("/workers/{asset_id}/station-active")
+async def set_active_station(asset_id: str, body: dict):
+    """Switch which station version is in force. body: {source, version}"""
+    src = body.get("source", "configured")
+    ver = int(body.get("version", 1))
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT 1 FROM asset_station
+                       WHERE asset_id=%s AND source=%s AND version=%s LIMIT 1""",
+                    (asset_id, src, ver))
+        if not cur.fetchone():
+            raise HTTPException(404, f"No {src} station version {ver}")
+        cur.execute("""INSERT INTO asset_station_active (asset_id, source, version)
+                       VALUES (%s,%s,%s)
+                       ON CONFLICT (asset_id) DO UPDATE
+                         SET source=EXCLUDED.source, version=EXCLUDED.version,
+                             updated_at=NOW()""", (asset_id, src, ver))
+    conn.commit()
+    await _notify("workers", {"asset_id": asset_id, "station": f"{src} v{ver}"})
     return {"status": "active", "source": src, "version": ver}
 
 

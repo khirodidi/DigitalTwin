@@ -66,7 +66,7 @@ digitaltwin/
 │   ├── watchdog.py              Heartbeat monitoring, ONLINE→DEGRADED→OFFLINE
 │   ├── thresholds.py            sensor → zone → global threshold resolution
 │   └── system_state.py          Global aggregation → SystemState
-├── persistence/postgres.py      Schema (13 tables) + all read/write
+├── persistence/postgres.py      Schema (15 tables) + all read/write
 ├── api/
 │   ├── main.py                  FastAPI app, WebSocket, static mount, lifespan
 │   ├── ws_manager.py            Broadcast to all connected clients
@@ -127,6 +127,14 @@ threshold defaults.
 **Localisation is zone-based, not trilateration.** A tag is simply associated
 with whichever sensor detects it. Cell-level granularity, no calibration.
 
+**Working station vs trajectory.** A worker's **station** is *where* it works:
+the unordered set of cells it spends most of its time at, each carrying a
+dwell `weight`. Its **trajectory** is *how* it moves between them: an ordered
+route. Both start as operator input and are refined independently by model ⑤ —
+the cells someone dwells at can drift while their tour stays the same, and
+vice versa. Do not collapse the two: model ① compares the *ordered* route with
+DTW and depends on the ordering.
+
 **Access control.** Each asset has `allowed_zones` and `allowed_sensors`.
 A zone authorisation **implicitly covers every sensor in that zone**.
 
@@ -163,7 +171,7 @@ Full specification in `docs/AI_MODELS.md`. Summary:
 | ② | Smart evacuation | XGBoost + Dijkstra | env features + fire map | route per asset |
 | ③ | System monitor | LSTM-AE + LSTM-Reg + XGBoost | (30,3) window | anomaly · forecast · failure |
 | ④ | Fire detection | ConvLSTM, 3 heads | (20,H,W,6) grid tensor | fire map · origin · spread |
-| ⑤ | Trajectory learning | stop-point clustering | location history | updated route |
+| ⑤ | Trajectory learning | stop-point clustering | location history | updated route + station |
 
 Training order matters — **④ runs first**, because ② consumes its per-cell fire
 probability as a feature.
@@ -179,16 +187,17 @@ tags its output `source: "rules"` vs `source: "convlstm"` etc.
 Model ④ is the only one trainable on day one — its dataset is synthesised from
 the configured grid rather than accumulated from operation.
 
-Model ⑤ means **trajectories are not fixed**: the operator sets an initial
-route, and the AI proposes updates. Both are versioned in `asset_trajectory`
-with `asset_trajectory_active` naming the one in force. The operator's
-original is never deleted.
+Model ⑤ means **trajectories and stations are not fixed**: the operator sets an
+initial route and an initial working station, and the AI proposes updates to
+each. Both are versioned — in `asset_trajectory` / `asset_station`, with
+`asset_trajectory_active` / `asset_station_active` naming the one in force.
+The operator's original is never deleted.
 
 ---
 
 ## Database
 
-13 tables. The ones worth knowing:
+15 tables. The ones worth knowing:
 
 | Table | Purpose |
 |---|---|
@@ -199,7 +208,9 @@ original is never deleted.
 | `assets` | workers, forklifts, pallets |
 | `authorisations` | `(asset_id, 'zone'\|'sensor', allowed_id)` |
 | `asset_trajectory` | versioned routes: `(asset_id, source, version, seq)` |
-| `asset_trajectory_active` | which version is in force |
+| `asset_trajectory_active` | which route version is in force |
+| `asset_station` | versioned working stations: `(asset_id, source, version, sensor_id)` + `weight` |
+| `asset_station_active` | which station version is in force |
 | `location_events` · `env_readings` · `sensor_health_events` · `events` | time series |
 | `system_snapshots` | aggregated state history |
 

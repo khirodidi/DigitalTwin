@@ -5,6 +5,8 @@
 //   - Shows their last N location events as a path on the sensor grid
 //   - Each step colour-coded by access status (green=OK, red=violation)
 //   - Chronological step numbers overlaid on sensor cells
+//   - The asset's WORKING STATION shaded underneath, so the area it is
+//     supposed to work at can be compared with where it actually went
 // =============================================================================
 
 import { useState, useEffect } from "react";
@@ -61,6 +63,10 @@ export default function TrajectoryMap({ workers, sensors, zones = [],
   const worker  = workers.find(w => w.asset_id === selected);
   const planned = Array.isArray(worker?.default_trajectory)
                   ? worker.default_trajectory : [];
+  // Working station — the cells this asset works at, drawn as filled corner
+  // markers so they read differently from the route polyline above them.
+  const station   = Array.isArray(worker?.station) ? worker.station : [];
+  const stationW  = worker?.station_weights || {};
   const plannedPts = planned.map(p => {
     const { row, col } = sensorPos(p);
     return `${MARGIN + col*(CELL+GAP) + CELL/2},${MARGIN + row*(CELL+GAP) + CELL/2}`;
@@ -152,6 +158,25 @@ export default function TrajectoryMap({ workers, sensors, zones = [],
                   stroke="#1e3a5f" strokeWidth="0.5" />
               ))}
 
+              {/* Working station — drawn under the routes so lines stay legible */}
+              {station.map((sid, i) => {
+                const { row, col } = sensorPos(sid);
+                if (row >= ROWS || col >= COLS) return null;
+                const w = stationW[sid];
+                return (
+                  <g key={"st" + i}>
+                    <rect x={MARGIN + col*(CELL+GAP)} y={MARGIN + row*(CELL+GAP)}
+                      width={CELL} height={CELL} rx={5}
+                      fill="#ec489922" stroke="#ec4899" strokeWidth="2" />
+                    <text x={MARGIN + col*(CELL+GAP) + 5}
+                          y={MARGIN + row*(CELL+GAP) + 12}
+                          fill="#f9a8d4" fontSize={8} fontFamily="monospace">
+                      🏭{w != null ? ` ${Math.round(w * 100)}%` : ""}
+                    </text>
+                  </g>
+                );
+              })}
+
               {/* Configured default trajectory (reference) */}
               {plannedPts && (
                 <polyline points={plannedPts} fill="none" stroke="#f59e0b"
@@ -235,6 +260,7 @@ export default function TrajectoryMap({ workers, sensors, zones = [],
                 { col:"#f87171", label:"Violation" },
                 { col:"#fbbf24", label:"Unknown" },
                 { col:"#f59e0b", label:"Planned route" },
+                { col:"#ec4899", label:"🏭 Working station" },
               ].map(({ col: c, label }, i) => (
                 <g key={label} transform={`translate(${MARGIN + i * 105}, ${svgH - 14})`}>
                   <rect width={10} height={10} rx={2} fill={c} opacity={0.8} />
