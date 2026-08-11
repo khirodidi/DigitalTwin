@@ -91,6 +91,37 @@ CREATE TABLE IF NOT EXISTS asset_trajectory_active (
 CREATE INDEX IF NOT EXISTS idx_traj_asset_src
     ON asset_trajectory (asset_id, source, version, seq);
 
+-- Working station: the SET of sensors an asset actually works at, as opposed
+-- to asset_trajectory which is the ORDERED route walked between them.
+-- A worker is assigned to a station (a machine and the cells around it); the
+-- trajectory is how they move across stations. Unordered by design — `weight`
+-- carries how much of the asset's time is spent at that cell (0..1), so the
+-- station is "where it works most of the time" rather than a bare list.
+-- Versioned exactly like asset_trajectory: the operator sets an INITIAL set,
+-- and model ⑤ learns an updated one from observed dwell. The operator's
+-- 'configured' v1 is never deleted.
+CREATE TABLE IF NOT EXISTS asset_station (
+    asset_id   TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+    sensor_id  TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'configured',   -- 'configured' | 'learned'
+    version    INT  NOT NULL DEFAULT 1,
+    weight     DOUBLE PRECISION DEFAULT 1.0,   -- share of dwell time at this cell
+    confidence DOUBLE PRECISION DEFAULT 1.0,   -- confidence in the version as a whole
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (asset_id, source, version, sensor_id)
+);
+
+-- One row per asset naming which station version is currently active
+CREATE TABLE IF NOT EXISTS asset_station_active (
+    asset_id   TEXT PRIMARY KEY REFERENCES assets(asset_id) ON DELETE CASCADE,
+    source     TEXT NOT NULL DEFAULT 'configured',
+    version    INT  NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_station_asset_src
+    ON asset_station (asset_id, source, version);
+
 CREATE TABLE IF NOT EXISTS sensor_config (
     sensor_id     TEXT PRIMARY KEY REFERENCES sensors(sensor_id) ON DELETE CASCADE,
     coverage_type TEXT    NOT NULL DEFAULT 'passage',
@@ -155,6 +186,30 @@ def load_asset_meta() -> dict[str, dict]:
         rows = cur.fetchall()
     return {r["asset_id"]: {"name": r["name"] or r["asset_id"],
                             "asset_type": r["asset_type"]} for r in rows}
+
+
+def load_active_stations() -> dict[str, dict[str, float]]:
+    """
+    asset_id → {sensor_id: weight} for the station version currently in force.
+
+    Assets with no station configured are simply absent from the result.
+    """
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute("""
+            SELECT s.asset_id, s.sensor_id, s.weight
+            FROM asset_station s
+            JOIN asset_station_active a
+              ON a.asset_id = s.asset_id
+             AND a.source   = s.source
+             AND a.version  = s.version
+        """)
+        rows = cur.fetchall()
+    out: dict[str, dict[str, float]] = {}
+    for r in rows:
+        out.setdefault(r["asset_id"], {})[r["sensor_id"]] = (
+            float(r["weight"]) if r["weight"] is not None else 1.0)
+    return out
 
 
 def save_location_event(asset: AssetState):

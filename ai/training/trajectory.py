@@ -22,9 +22,17 @@
 # INPUT   location_events, asset_trajectory (active version), sensor_config
 # OUTPUT  a new 'learned' trajectory version per asset, with a confidence score
 #
-# The learned route becomes active only when confidence exceeds MIN_CONFIDENCE.
-# The operator's original 'configured' version is never deleted and can be
-# restored from the Configuration page at any time.
+# WORKING STATION
+#   The same observed dwell also yields the asset's *working station* — the SET
+#   of cells it spends most of its time at, weighted by dwell share. Where the
+#   route answers "in what order does it move?", the station answers "where
+#   does it work?". The two are learned independently: a worker can keep the
+#   same tour while the cells they dwell at drift, and vice versa.
+#
+# Both the learned route and the learned station become active only when
+# confidence exceeds MIN_CONFIDENCE. The operator's original 'configured'
+# versions are never deleted and can be restored from the Configuration page
+# at any time.
 # =============================================================================
 
 import logging
@@ -41,6 +49,7 @@ DWELL_THRESHOLD  = 3      # consecutive readings at a cell to count as a stop
 MIN_STOP_SUPPORT = 0.35   # a waypoint must appear in ≥35 % of shifts
 MIN_CONFIDENCE   = 0.60   # below this the proposal is stored but not activated
 MAX_WAYPOINTS    = 8
+MAX_STATION_CELLS = 6     # a working station is an area, not half the factory
 
 
 # ─── Extraction ───────────────────────────────────────────────────────────────
@@ -163,6 +172,73 @@ def route_similarity(a: list, b: list) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def learn_station(shifts: list, efficiency: dict = None) -> tuple:
+    """
+    Derive the WORKING STATION — the set of cells the asset actually spends its
+    time at — from observed shifts.
+
+    Distinct from learn_route(): the route is the ordered tour between
+    stations, this is the unordered area with a weight per cell. A cell earns
+    its place by total dwell, not by being passed through, so time is counted
+    only inside runs long enough to register as a stop.
+
+    Returns (weights, confidence) where weights maps sensor_id → share of
+    dwell time in 0..1, summing to 1 across the returned cells.
+    """
+    if len(shifts) < MIN_SHIFTS:
+        return {}, 0.0
+
+    usable = shifts
+    if efficiency:
+        good = [s for i, s in enumerate(shifts)
+                if efficiency.get(i, 1.0) >= MIN_EFFICIENCY]
+        if len(good) >= MIN_SHIFTS:
+            usable = good
+
+    dwell   = Counter()   # cell → total readings spent dwelling there
+    support = Counter()   # cell → number of shifts it was worked at
+    for seq in usable:
+        per_shift = Counter()
+        run, prev = 0, None
+        for cell in seq:
+            run = run + 1 if cell == prev else 1
+            prev = cell
+            # Count every reading from the moment the run qualifies as a stop,
+            # including the readings that established it.
+            if run == DWELL_THRESHOLD:
+                per_shift[cell] += DWELL_THRESHOLD
+            elif run > DWELL_THRESHOLD:
+                per_shift[cell] += 1
+        dwell.update(per_shift)
+        support.update(per_shift.keys())
+
+    n = len(usable)
+    cells = [c for c in dwell if support[c] / n >= MIN_STOP_SUPPORT]
+    if not cells:
+        return {}, 0.0
+
+    # Keep the cells the asset spends most of its time at
+    cells.sort(key=lambda c: -dwell[c])
+    cells = cells[:MAX_STATION_CELLS]
+
+    total   = sum(dwell[c] for c in cells) or 1
+    weights = {c: round(dwell[c] / total, 6) for c in cells}
+
+    mean_support  = float(np.mean([support[c] / n for c in cells]))
+    sample_factor = min(n / (MIN_SHIFTS * 3), 1.0)
+    confidence    = round(mean_support * 0.7 + sample_factor * 0.3, 4)
+
+    return weights, confidence
+
+
+def station_similarity(a, b) -> float:
+    """Jaccard overlap of two station cell sets."""
+    sa, sb = set(a or []), set(b or [])
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
 # ─── Persistence ──────────────────────────────────────────────────────────────
 
 def _load_grid():
@@ -187,6 +263,45 @@ def _active_route(asset_id: str) -> list:
             WHERE t.asset_id=%s ORDER BY t.seq
         """, (asset_id,))
         return [r["sensor_id"] for r in cur.fetchall()]
+
+
+def _active_station(asset_id: str) -> list:
+    from persistence.postgres import get_conn
+    import psycopg2.extras
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT s.sensor_id FROM asset_station s
+            JOIN asset_station_active a
+              ON a.asset_id=s.asset_id AND a.source=s.source AND a.version=s.version
+            WHERE s.asset_id=%s ORDER BY s.weight DESC
+        """, (asset_id,))
+        return [r["sensor_id"] for r in cur.fetchall()]
+
+
+def save_learned_station(asset_id: str, weights: dict, confidence: float,
+                         activate: bool) -> int:
+    """Store a new 'learned' station version; activate it only if confident."""
+    from persistence.postgres import get_conn
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COALESCE(MAX(version),0)+1 FROM asset_station
+                       WHERE asset_id=%s AND source='learned'""", (asset_id,))
+        version = cur.fetchone()[0]
+        for sid, w in weights.items():
+            cur.execute("""INSERT INTO asset_station
+                             (asset_id, sensor_id, source, version, weight, confidence)
+                           VALUES (%s,%s,'learned',%s,%s,%s)""",
+                        (asset_id, sid, version, w, confidence))
+        if activate:
+            cur.execute("""INSERT INTO asset_station_active
+                             (asset_id, source, version)
+                           VALUES (%s,'learned',%s)
+                           ON CONFLICT (asset_id) DO UPDATE
+                             SET source='learned', version=EXCLUDED.version,
+                                 updated_at=NOW()""", (asset_id, version))
+    conn.commit()
+    return version
 
 
 def save_learned_route(asset_id: str, route: list, confidence: float,
@@ -233,39 +348,71 @@ def train_trajectories(days: int = 30, activate: bool = True) -> dict:
         logger.info("  No location history — nothing to learn")
         return {}
 
-    updated, skipped, results = 0, 0, {}
+    updated, stations, skipped, results = 0, 0, 0, {}
     for asset_id, shifts in sequences.items():
         if len(shifts) < MIN_SHIFTS:
             skipped += 1
             continue
 
+        entry = {}
+
+        # ── Route: the ordered tour walked between stations ───────────────
         route, conf = learn_route(shifts, pos_fn)
-        if not route:
+        if route:
+            current = _active_route(asset_id)
+            sim     = route_similarity(route, current)
+            # Only store a new version when the route materially differs
+            if current and sim > 0.85:
+                entry["route"] = {"action": "unchanged",
+                                  "similarity": round(sim, 3)}
+            else:
+                act = activate and conf >= MIN_CONFIDENCE
+                version = save_learned_route(asset_id, route, conf, act)
+                updated += 1
+                entry["route"] = {
+                    "action":     "activated" if act else "proposed",
+                    "version":    version,
+                    "confidence": conf,
+                    "similarity": round(sim, 3),
+                    "waypoints":  len(route),
+                    "route":      route,
+                }
+                logger.info(f"  {asset_id} route  : {len(route)} waypoints, "
+                            f"conf={conf:.2f}, sim={sim:.2f} → "
+                            f"{'ACTIVATED' if act else 'proposed only'}")
+
+        # ── Station: the area actually worked at ──────────────────────────
+        # Learned independently of the route: a worker can keep the same tour
+        # while the cells they dwell at drift, and vice versa.
+        weights, sconf = learn_station(shifts)
+        if weights:
+            cur_station = _active_station(asset_id)
+            ssim = station_similarity(weights.keys(), cur_station)
+            if cur_station and ssim > 0.85:
+                entry["station"] = {"action": "unchanged",
+                                    "similarity": round(ssim, 3)}
+            else:
+                sact = activate and sconf >= MIN_CONFIDENCE
+                sver = save_learned_station(asset_id, weights, sconf, sact)
+                stations += 1
+                entry["station"] = {
+                    "action":     "activated" if sact else "proposed",
+                    "version":    sver,
+                    "confidence": sconf,
+                    "similarity": round(ssim, 3),
+                    "cells":      len(weights),
+                    "weights":    weights,
+                }
+                logger.info(f"  {asset_id} station: {len(weights)} cells, "
+                            f"conf={sconf:.2f}, sim={ssim:.2f} → "
+                            f"{'ACTIVATED' if sact else 'proposed only'}")
+
+        if entry:
+            results[asset_id] = entry
+        else:
             skipped += 1
-            continue
 
-        current = _active_route(asset_id)
-        sim     = route_similarity(route, current)
-
-        # Only store a new version when the route materially differs
-        if current and sim > 0.85:
-            results[asset_id] = {"action": "unchanged", "similarity": round(sim, 3)}
-            continue
-
-        act = activate and conf >= MIN_CONFIDENCE
-        version = save_learned_route(asset_id, route, conf, act)
-        updated += 1
-        results[asset_id] = {
-            "action":     "activated" if act else "proposed",
-            "version":    version,
-            "confidence": conf,
-            "similarity": round(sim, 3),
-            "waypoints":  len(route),
-            "route":      route,
-        }
-        logger.info(f"  {asset_id}: {len(route)} waypoints, conf={conf:.2f}, "
-                    f"sim={sim:.2f} → {'ACTIVATED' if act else 'proposed only'}")
-
-    logger.info(f"  {updated} route(s) updated, {skipped} skipped "
-                f"(need ≥{MIN_SHIFTS} shifts)")
-    return {"updated": updated, "skipped": skipped, "assets": results}
+    logger.info(f"  {updated} route(s) and {stations} station(s) updated, "
+                f"{skipped} skipped (need ≥{MIN_SHIFTS} shifts)")
+    return {"updated": updated, "stations_updated": stations,
+            "skipped": skipped, "assets": results}

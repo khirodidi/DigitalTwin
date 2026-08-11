@@ -3,8 +3,13 @@
 //   • Add / edit / delete assets (shown by NAME, id secondary)
 //   • ZONE authorisation list  — tick the zones the asset may enter
 //   • SENSOR authorisation list — tick individual cells
-//   • DEFAULT TRAJECTORY       — ordered sensors the asset works at
+//   • WORKING STATION          — unordered set of cells the asset works at
+//   • DEFAULT TRAJECTORY       — ordered route walked between stations
 //   • "Authorise all" rescue button to clear a violation storm
+//
+// Station vs trajectory: the station is WHERE the asset works (an area), the
+// trajectory is HOW it moves between those places (a route). Both start as
+// operator input and are refined by model ⑤ from observed movement.
 // =============================================================================
 
 import { useState } from "react";
@@ -32,6 +37,7 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
   const [openId,   setOpenId]   = useState(null);
   const [auth,     setAuth]     = useState({ allowed_zones:[], allowed_sensors:[] });
   const [traj,     setTraj]     = useState([]);
+  const [station,  setStation]  = useState([]);
   const [filter,   setFilter]   = useState("all");
 
   const zoneColor = zid => PALETTE[Math.max(0, zones.findIndex(z=>z.zone_id===zid)) % PALETTE.length];
@@ -49,6 +55,7 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
       allowed_sensors: a.filter(x => x.type === "sensor").map(x => x.id),
     });
     setTraj(Array.isArray(w.default_trajectory) ? [...w.default_trajectory] : []);
+    setStation(Array.isArray(w.station) ? [...w.station] : []);
     setOpenId(w.asset_id);
   }
 
@@ -61,6 +68,10 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
 
   // Trajectory is ORDERED — clicking appends, clicking again removes
   const toggleTraj = s => setTraj(p =>
+    p.includes(s) ? p.filter(x=>x!==s) : [...p, s]);
+
+  // The station is an unordered SET — order carries no meaning here
+  const toggleStation = s => setStation(p =>
     p.includes(s) ? p.filter(x=>x!==s) : [...p, s]);
 
   // A zone authorisation covers EVERY sensor in that zone. Compute the
@@ -78,14 +89,15 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
     await apiCall(`/api/config/workers/${w.asset_id}/authorisations`, "PUT", auth);
     await apiCall(`/api/config/workers/${w.asset_id}`, "PUT", {
       asset_id: w.asset_id, asset_type: w.asset_type, name: w.name,
-      default_trajectory: traj,
+      default_trajectory: traj, station,
     });
     setOpenId(null);
   }
 
   async function saveWorker() {
     if (!form.asset_id.trim() || !form.name.trim()) return;
-    await apiCall("/api/config/workers", "POST", { ...form, default_trajectory: [] });
+    await apiCall("/api/config/workers", "POST",
+                  { ...form, default_trajectory: [], station: [] });
     setForm({ asset_id:"", asset_type:"worker", name:"" });
     setShowForm(false);
   }
@@ -175,6 +187,7 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
         const zoneIds = a.filter(x=>x.type==="zone").map(x=>x.id);
         const sensIds = a.filter(x=>x.type==="sensor").map(x=>x.id);
         const tr      = Array.isArray(w.default_trajectory) ? w.default_trajectory : [];
+        const st      = Array.isArray(w.station) ? w.station : [];
         const isOpen  = openId === w.asset_id;
         const none    = !zoneIds.length && !sensIds.length;
 
@@ -219,6 +232,14 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
                   </>
                 )}
               </div>
+
+              <span style={{ fontSize:10,
+                color: w.station_source === "learned" ? "#c4b5fd"
+                     : st.length ? "#f9a8d4" : "#334155" }}>
+                🏭 {st.length ? `${st.length} station cell${st.length>1?"s":""}`
+                              : "no station"}
+                {w.station_source === "learned" && " · AI"}
+              </span>
 
               <span style={{ fontSize:10,
                 color: w.trajectory_source === "learned" ? "#c4b5fd"
@@ -289,10 +310,50 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
                     mode="select" accent="#14b8a6" />
                 </div>
 
+                {/* WORKING STATION */}
+                <div style={{ marginTop:16 }}>
+                  <div style={{ ...lbl, color:"#ec4899", fontWeight:700 }}>
+                    3 · WORKING STATION — where this asset works most of the time
+                    <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
+                      {" "}(initial set, refined by AI from real movement)
+                    </span>
+                    {w.station_source === "learned" && (
+                      <span style={{ marginLeft:8, padding:"1px 7px", fontSize:9,
+                        borderRadius:3, background:"#7c3aed33", color:"#c4b5fd",
+                        border:"1px solid #7c3aed" }}>
+                        AI-learned v{w.station_version}
+                      </span>
+                    )}
+                  </div>
+                  <SensorGridPicker
+                    sensors={sensors} zones={zones} cols={cols} rows={rows}
+                    blueprintUrl={blueprintUrl}
+                    selected={station}
+                    implied={impliedSensors}
+                    onToggle={toggleStation}
+                    mode="select" accent="#ec4899" />
+                  {station.length > 0 && (
+                    <div style={{ marginTop:8, padding:"7px 11px",
+                      background:"#050c1a", borderRadius:6, fontSize:10,
+                      color:"#f9a8d4", fontFamily:"monospace" }}>
+                      Station: {station.join(" · ")}
+                      {w.station_weights && w.station_source === "learned" && (
+                        <span style={{ color:"#64748b" }}>
+                          {"  ("}{station.map(s =>
+                            `${s} ${Math.round((w.station_weights[s]||0)*100)}%`
+                          ).join(", ")}{")"}
+                        </span>
+                      )}
+                      <button style={{ ...btn("#6b7280", true), marginLeft:10 }}
+                        onClick={()=>setStation([])}>Clear</button>
+                    </div>
+                  )}
+                </div>
+
                 {/* DEFAULT TRAJECTORY */}
                 <div style={{ marginTop:16 }}>
                   <div style={{ ...lbl, color:"#f59e0b", fontWeight:700 }}>
-                    3 · TRAJECTORY — initial route, refined by AI over time
+                    4 · TRAJECTORY — initial route, refined by AI over time
                     <span style={{ color:"#475569", fontWeight:400, letterSpacing:0 }}>
                       {" "}(click cells in visiting order)
                     </span>
@@ -328,7 +389,8 @@ export default function WorkerManager({ workers, zones, sensors, apiCall, reload
                   color: auth.allowed_zones.length || auth.allowed_sensors.length
                           ? "#4ade80" : "#f87171" }}>
                   {auth.allowed_zones.length || auth.allowed_sensors.length
-                    ? `✓ ${auth.allowed_zones.length} zone(s), ${auth.allowed_sensors.length} sensor(s), ${traj.length} waypoint(s)`
+                    ? `✓ ${auth.allowed_zones.length} zone(s), ${auth.allowed_sensors.length} sensor(s), ` +
+                      `${station.length} station cell(s), ${traj.length} waypoint(s)`
                     : "⚠ No access granted — every position will be a VIOLATION"}
                 </div>
 

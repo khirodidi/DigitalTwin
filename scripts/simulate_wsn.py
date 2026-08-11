@@ -120,11 +120,17 @@ class FactoryConfig:
                     "allowed_zones":      [a["id"] for a in auth if a.get("type") == "zone"],
                     "allowed_sensors":    [a["id"] for a in auth if a.get("type") == "sensor"],
                     "default_trajectory": list(traj),
+                    # Working station: the cells this asset works at most of the
+                    # time, with a dwell weight each.
+                    "station":            list(w.get("station") or []),
+                    "station_weights":    dict(w.get("station_weights") or {}),
                 })
             counts = {}
             for a in self.assets:
                 counts[a["asset_type"]] = counts.get(a["asset_type"], 0) + 1
-            print(f"    assets    : {len(self.assets)}  {counts}")
+            staffed = sum(1 for a in self.assets if a["station"])
+            print(f"    assets    : {len(self.assets)}  {counts}  "
+                  f"({staffed} with a working station)")
 
         return bool(self.sensors and self.assets)
 
@@ -260,6 +266,15 @@ class Asset:
     DWELL = {"machine": (5, 12), "storage": (3, 6),
              "passage": (1, 2),  "exit":    (1, 2)}
 
+    # How much longer an asset lingers on its own working station, per visit.
+    # The heaviest cell gets the full multiplier and lighter cells proportionally
+    # less, which concentrates observed dwell on the station: model ⑤ reliably
+    # recovers the configured cells from simulator output.
+    # Note this scales dwell PER VISIT, not total occupancy — route topology
+    # also matters, and a patrol visits its two endpoints half as often as its
+    # interior waypoints, so the busiest cell is not always the heaviest one.
+    STATION_DWELL_BOOST = 2.5
+
     # Coverage types each asset type refuses to enter.
     # Every sensor defaults to 'passage', and EXIT cells are passable by all
     # asset types (workers and pallets included) — an exit is a doorway.
@@ -292,6 +307,16 @@ class Asset:
         self.avoid      = self.AVOID.get(self.type, [])
         self.style      = self.STYLE.get(self.type, "patrol")
         self.speed      = self.SPEED.get(self.type, 1)
+
+        # Working station — the cells this asset works at most of the time.
+        # Station cells are preferred when picking waypoints and are dwelled at
+        # longer, so simulated movement reflects the configured station instead
+        # of treating every cell as equally interesting.
+        self.station    = [s for s in (spec.get("station") or [])
+                           if s in cfg.sensors and cfg.passable(s)]
+        self.station_w  = {s: float(w) for s, w
+                           in (spec.get("station_weights") or {}).items()
+                           if s in self.station}
 
         self.home       = self._home_cells()
         # A trajectory configured in the dashboard always wins over a generated one
@@ -334,7 +359,10 @@ class Asset:
     # ── Territory ────────────────────────────────────────────────────────────
 
     def _home_cells(self):
-        allowed = set(self.cfg.zone_sensors(self.zones)) | set(self.sensors_ok)
+        # The station is by definition where this asset works, so its cells are
+        # home ground even when authorisation was granted only at zone level.
+        allowed = (set(self.cfg.zone_sensors(self.zones)) | set(self.sensors_ok)
+                   | set(self.station))
         cells = [s for s in allowed
                  if self.cfg.passable(s) and self.cfg.ctype(s) not in self.avoid]
         if cells:
@@ -413,9 +441,14 @@ class Asset:
         if best:
             self.home = sorted(best)
 
+        # Station cells inside the reachable home area, heaviest dwell first
+        station_here = sorted((s for s in self.station if s in set(self.home)),
+                              key=lambda s: -self.station_w.get(s, 0.0))
+
         if self.style == "static":
-            # Pallets sit in one place with at most one nearby alternate
-            base = random.choice(self.home)
+            # Pallets sit in one place with at most one nearby alternate;
+            # park them on their station when they have one.
+            base = station_here[0] if station_here else random.choice(self.home)
             nbrs = [x for x in self.cfg.neighbours(base, avoid=self.avoid)
                     if x in self.home]
             return [base] + ([random.choice(nbrs)] if nbrs else [])
@@ -424,7 +457,10 @@ class Asset:
         prefer = self.PREFER.get(self.type, ["passage"])
         buckets = {t: [s for s in self.home if self.cfg.ctype(s) == t] for t in prefer}
 
-        picks = []
+        # The working station comes first — those are the cells the asset is
+        # supposed to be at, so the route is built around them and coverage
+        # type only decides what fills the remaining slots.
+        picks = list(station_here)
         for t in prefer:
             pool = [s for s in buckets.get(t, []) if s not in picks]
             random.shuffle(pool)
@@ -475,6 +511,21 @@ class Asset:
         z = self.cfg.zone_of(sid)
         return bool(z and z in self.zones)
 
+    # ── Dwell ────────────────────────────────────────────────────────────────
+
+    def _dwell_for(self, sid) -> int:
+        """
+        Ticks to spend at `sid`. Coverage type sets the base; a cell belonging
+        to this asset's working station is held proportionally longer.
+        """
+        lo, hi = self.DWELL.get(self.cfg.ctype(sid), (1, 2))
+        base   = random.randint(lo, hi)
+        if sid not in self.station:
+            return base
+        heaviest = max(self.station_w.values(), default=0.0)
+        share    = (self.station_w.get(sid, 0.0) / heaviest) if heaviest else 1.0
+        return max(1, round(base * (1.0 + self.STATION_DWELL_BOOST * share)))
+
     # ── Per-tick update ──────────────────────────────────────────────────────
 
     def step(self) -> bool:
@@ -510,8 +561,7 @@ class Asset:
             if was_ok and not self._authorised(self.sensor):
                 self.violations += 1
             if not self.leg:                  # arrived at the waypoint
-                lo, hi = self.DWELL.get(self.cfg.ctype(self.sensor), (1, 2))
-                self.dwell = random.randint(lo, hi)
+                self.dwell = self._dwell_for(self.sensor)
                 self._plan_next_leg()
             return True
 
@@ -524,6 +574,11 @@ class Asset:
         out = (f"{self.name[:20]:20} {self.type:9} "
                f"{self.source:10} {self.style:7} home={len(self.home):3} "
                f"wp={len(self.waypoints)}  [{wp}]")
+        if self.station:
+            st = ", ".join(f"{s}({self.station_w.get(s,0):.0%})"
+                           for s in sorted(self.station,
+                                           key=lambda s: -self.station_w.get(s,0)))
+            out += "\n" + " " * 24 + f"station: {st}"
         if self.blocked_wp:
             out += ("\n" + " " * 24 + "⚠ route waypoint(s) on impassable cells, "
                     f"skipped: {', '.join(self.blocked_wp)}")
@@ -551,15 +606,18 @@ def build_fallback(cfg, args):
     for i in range(1, args.workers + 1):
         cfg.assets.append({"asset_id": f"W{i:02d}", "asset_type": "worker",
                            "name": f"Worker {i}", "allowed_zones": [],
-                           "allowed_sensors": [], "default_trajectory": []})
+                           "allowed_sensors": [], "default_trajectory": [],
+                           "station": [], "station_weights": {}})
     for i in range(1, args.forklifts + 1):
         cfg.assets.append({"asset_id": f"F{i:02d}", "asset_type": "forklift",
                            "name": f"Forklift {i}", "allowed_zones": [],
-                           "allowed_sensors": [], "default_trajectory": []})
+                           "allowed_sensors": [], "default_trajectory": [],
+                           "station": [], "station_weights": {}})
     for i in range(1, args.pallets + 1):
         cfg.assets.append({"asset_id": f"P{i:02d}", "asset_type": "pallet",
                            "name": f"Pallet {i}", "allowed_zones": [],
-                           "allowed_sensors": [], "default_trajectory": []})
+                           "allowed_sensors": [], "default_trajectory": [],
+                           "station": [], "station_weights": {}})
 
 
 def run(args):

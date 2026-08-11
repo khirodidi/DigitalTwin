@@ -430,12 +430,12 @@ running system without a restart.
 
 ---
 
-## ⑤ Trajectory Learning — routes evolve over time
+## ⑤ Trajectory & Station Learning — routes and stations evolve over time
 
-The `default_trajectory` an operator configures is the **initial** route only.
-Real work patterns drift: machines move, storage bays are reassigned, workers
-find shorter paths. This module mines observed movement and proposes an
-updated route.
+The `default_trajectory` and the working `station` an operator configures are
+the **initial** values only. Real work patterns drift: machines move, storage
+bays are reassigned, workers find shorter paths. This module mines observed
+movement and proposes both an updated route and an updated station.
 
 ### Algorithm
 
@@ -473,17 +473,65 @@ Observed sequence `S03 S03 S03 S03 S04 S09 S09 S09 S09 S09 S09 S10 S15 S15…`
 | Configured route | `S03 → S21` |
 | Similarity | 0.25 → materially different, update activated |
 
+### Working station — *where* the asset works
+
+The route answers "in what order does it move?". The **working station**
+answers "where does it work?" — the unordered **set** of cells the asset
+spends most of its time at, with a weight per cell.
+
+A worker is assigned to a station (a machine and the cells around it); the
+trajectory is how they move across stations. The two are learned from the same
+observed dwell but **independently**: a worker can keep the same tour while the
+cells they dwell at drift, and vice versa.
+
+```
+station weight(cell) = dwell(cell) / Σ dwell(kept cells)
+```
+
+Dwell is counted only inside runs of ≥ `DWELL_THRESHOLD` consecutive readings,
+so corridors passed through score zero. A cell must appear in ≥35 % of shifts
+(`MIN_STOP_SUPPORT`) to be kept, and at most `MAX_STATION_CELLS` (6) survive —
+a station is an area, not half the factory.
+
+| | |
+|---|---|
+| Input | `location_events` (30 days) |
+| Output | New `learned` station version + per-cell weights + confidence |
+| Activation | Automatic when `confidence ≥ 0.60`, otherwise stored as a proposal |
+
+Confidence uses the same formula as the route.
+
+#### Verified behaviour
+
+Observed sequence `S03×4  S04  S09×6  S10  S15×5`, repeated over 6 shifts:
+
+| | |
+|---|---|
+| Learned station | `S09 40 %`, `S15 33 %`, `S03 27 %` |
+| Corridors `S04`, `S10` | excluded — never dwelled at |
+| Confidence | 0.82 |
+
+Round-tripped against the simulator: configuring a station of
+`S09 50 % · S15 30 % · S03 20 %`, generating 8 shifts of movement and feeding
+them back recovers all three cells at confidence 0.75. Note the *ordering* of
+learned weights need not match the configured ones — a patrol visits its two
+endpoint waypoints half as often as its interior ones, so total occupancy
+reflects route topology as well as per-visit dwell.
+
 ### Versioning
 
-Both routes are retained. `asset_trajectory` stores every version keyed by
-`(source, version)`, and `asset_trajectory_active` names the one in force:
+Both routes and both stations are retained. `asset_trajectory` and
+`asset_station` store every version keyed by `(source, version)`, and
+`asset_trajectory_active` / `asset_station_active` name the ones in force:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/config/workers/{id}/trajectory-versions` | Full history with the active one flagged |
-| `PUT /api/config/workers/{id}/trajectory-active` | Switch version — revert to the operator's original at any time |
+| `GET /api/config/workers/{id}/trajectory-versions` | Full route history with the active one flagged |
+| `PUT /api/config/workers/{id}/trajectory-active` | Switch route version — revert to the operator's original at any time |
+| `GET /api/config/workers/{id}/station-versions` | Full station history with the active one flagged |
+| `PUT /api/config/workers/{id}/station-active` | Switch station version — revert to the operator's original at any time |
 
-The operator's `configured` v1 is never deleted.
+The operator's `configured` v1 is never deleted, for either.
 
 ---
 

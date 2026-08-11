@@ -34,7 +34,8 @@ def run_trajectory(days=30):
     try:
         from ai.training.trajectory import train_trajectories
         m = train_trajectories(days=days, activate=True)
-        logger.info(f"  ✓ {m.get('updated',0)} route(s) updated"); return m
+        logger.info(f"  ✓ {m.get('updated',0)} route(s) and "
+                    f"{m.get('stations_updated',0)} station(s) updated"); return m
     except Exception as e:
         logger.error(f"  ✗ {e}", exc_info=True); return {}
 
