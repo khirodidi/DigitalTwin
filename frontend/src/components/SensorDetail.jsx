@@ -87,11 +87,14 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop.
+          z-index sits above the full-screen factory view (which uses 200) so
+          clicking a sensor works identically in normal and full-screen mode.
+          Anything layered over the map must stay below this. */}
       <div
         onClick={onClose}
         style={{
-          position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:100,
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:300,
         }}
       />
 
@@ -104,7 +107,7 @@ export default function SensorDetail({ sensorId, sensor, health, assets, onClose
         border:`1.5px solid ${col.border}`,
         borderRadius:12,
         boxShadow:`0 0 40px ${col.border}44`,
-        zIndex:101, display:"flex", flexDirection:"column",
+        zIndex:301, display:"flex", flexDirection:"column",
         overflow:"hidden", fontFamily:"monospace",
       }}>
 
