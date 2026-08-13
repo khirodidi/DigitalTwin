@@ -89,6 +89,39 @@ whether it is writable, and the size limit. Common causes:
 
 ---
 
+## `The '<' operator is reserved for future use` when seeding
+
+You are in **Windows PowerShell**, which has no `<` input-redirection
+operator, so the documented seed command cannot run as written.
+
+Do not reach for `Get-Content ... | docker exec -i` as the fix. It works on
+PowerShell 7+, but on **Windows PowerShell 5.1** `Get-Content` reads using the
+system ANSI codepage rather than UTF-8, and `seed_db.sql` contains ~980
+non-ASCII bytes (box-drawing characters in comments, em-dashes, and names such
+as `Emir Yıldız`). Those get silently corrupted on the way in.
+
+Copy the file into the container and let `psql` read it there — no redirection
+and no re-encoding:
+
+```powershell
+docker cp scripts\seed_db.sql dt_postgres:/tmp/seed_db.sql
+docker exec dt_postgres psql -U dt_user -d digital_twin -f /tmp/seed_db.sql
+```
+
+Verify it landed:
+
+```powershell
+docker exec dt_postgres psql -U dt_user -d digital_twin -c "SELECT asset_id, name FROM assets ORDER BY asset_id;"
+```
+
+If a name shows as `Emir YÄ±ldÄ±z` or similar, the file was imported with the
+wrong encoding — re-run the `docker cp` version above.
+
+The same applies to restoring a backup, and to any other documented command
+using `<`.
+
+---
+
 ## Setup screen keeps reappearing
 
 Grid size **and** a blueprint image are both mandatory. Check:

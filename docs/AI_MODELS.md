@@ -1,19 +1,35 @@
 # AI Layer — Algorithms, Datasets, Inputs and Outputs
 
-Four models run inside the Digital Twin Engine. All of them read the runtime
+Five models run against the Digital Twin. All of them read the runtime
 configuration (grid size, zones defined by their sensor lists, per-sensor
-`coverage_type` and `passable` flags, worker authorisations and
-`default_trajectory`), so nothing is hard-coded to a particular factory.
+`coverage_type` and `passable` flags, worker authorisations, working stations
+and trajectories), so nothing is hard-coded to a particular factory.
 
 | # | Model | Algorithm | Trains on | Retrains |
 |---|---|---|---|---|
-| ① | Movement Optimiser | LSTM + Dynamic Time Warping | `location_events` + `asset_trajectory` | weekly |
-| ② | Smart Evacuation | XGBoost + danger-weighted Dijkstra | `env_readings` + `events` + synthetic | on new incidents |
-| ③ | System Monitor | LSTM-Autoencoder + LSTM-Regressor + XGBoost | `env_readings` + `sensor_health_events` | nightly 02:00 |
-| ④ | **Fire Detection & Localisation** | **ConvLSTM + 3 heads** | **synthetic grid simulations + real negatives** | **nightly + on incident** |
+| ① | Movement Optimiser | LSTM sequence classifier | `location_events` | nightly 02:00 |
+| ② | Smart Evacuation | XGBoost + danger-weighted Dijkstra | `env_readings` + `events` + synthetic | nightly 02:00 |
+| ③ | System Monitor | LSTM-Autoencoder + LSTM-Regressor (+ XGBoost, unwired) | `env_readings` | nightly 02:00 |
+| ④ | **Fire Detection & Localisation** | **ConvLSTM + 3 heads** | **synthetic grid simulations + real negatives** | nightly 02:00 |
+| ⑤ | Trajectory & Station Learning | stop-point clustering | `location_events` | nightly 02:00 |
 
-Execution order matters: **④ trains first**, because ② consumes its per-cell
-fire probability as an input feature.
+There is no per-model cadence: `AITrainer` runs all five as one nightly batch,
+plus whenever hourly drift detection fires. Execution order within the batch
+matters — **④ trains first**, because ② is designed to consume its per-cell
+fire probability.
+
+> **Two documents, two purposes.** This file covers algorithms, feature
+> derivations and evaluation. For a compact per-model card — goal, inputs,
+> outputs, cadence, dataset — see
+> [`AI_MODELS_REFERENCE.md`](AI_MODELS_REFERENCE.md).
+
+> **Implementation status.** Several behaviours described below are implemented
+> but not currently reachable at runtime: model ③ is never loaded into the
+> engine, model ③c is never trained, model ②'s trained danger model is never
+> loaded, and model ①'s DTW labelling exists but is not used by the trainer.
+> Each is flagged in place, and summarised under
+> [Implementation status](#implementation-status). The rule-based fallbacks
+> keep the system functional regardless, which is why these are easy to miss.
 
 ---
 
@@ -21,53 +37,56 @@ fire probability as an input feature.
 
 **Problem.** Detect unnecessary worker movement and quantify wasted effort.
 
-**What changed.** Previously the label came from a hand-tuned heuristic
-(backtrack ratio, idle loops). Now every asset has a configured
-`default_trajectory` — the ordered list of sensors it is *supposed* to work
-at. That is real ground truth, so the model learns deviation from an intended
-route rather than an invented notion of "efficiency".
-
 ### Algorithm
 
-Two-branch network:
+Two-branch network (`ai/training/movement.py`):
 
 ```
 zone tokens (20,) ──> Embedding(16) ──> LSTM(64, 2 layers, dropout 0.2) ──┐
-                                                                          ├─> MLP(64,32) ─> sigmoid
-tabular features (11,) ───────────────────────────────────────────────────┘
+                                                                          ├─> MLP(64) ─> sigmoid
+tabular features (6,) ────────────────────────────────────────────────────┘
 ```
 
-Labels come from **Dynamic Time Warping** between the actual cell sequence and
-the configured route:
-
-```
-e = 1 − 0.45·min(DTW_norm, 1.11) − 0.30·(1 − adherence) − 0.40·min(extra_ratio, 0.5)
-DTW_norm = DTW(actual, planned) / (2 · |planned|)
-```
-
-DTW rather than direct comparison because a worker who visits the right stops
-in the right order but lingers longer at one machine should not be penalised.
-DTW aligns sequences of unequal length and measures route *shape* only.
-
-Verified behaviour:
-
-| Actual path vs plan | DTW | Adherence | Label |
-|---|---|---|---|
-| Perfect adherence | 0.00 | 1.00 | **1.00** |
-| Same route, repeated dwells | 0.00 | 1.00 | **1.00** |
-| Small detour | 0.12 | 1.00 | 0.86 |
-| Significant wandering | 1.12 | 0.50 | 0.15 |
-| Wrong area entirely | 1.75 | 0.00 | 0.00 |
-
-Assets with no configured route fall back to the original heuristic, so the
-model trains on a mixed cohort.
+Trained 40 epochs, Adam at `1e-3`, batch size 32. Shifts with fewer than 5
+location hops are discarded.
 
 ### Input
 
 | Branch | Shape | Contents |
 |---|---|---|
-| Sequence | `(20,)` int | Zone token ids, left-padded |
-| Tabular | `(11,)` float | `dtw_distance`, `route_adherence`, `extra_cells`, `path_efficiency`, `machine_dwell_ratio`, `passage_transit_ratio`, `backtrack_ratio`, `idle_loop_count`, `auth_violations`, `hour`, `day_of_week` |
+| Sequence | `(20,)` int | Zone token ids, left-padded with 0; vocabulary built at training time |
+| Tabular | `(6,)` float | `backtrack_ratio`, `idle_loop_count`, `auth_violations`, `mean_dwell_secs/3600`, `hour/23`, `day_of_week/6` |
+
+### Labels — heuristic, and this is the model's main weakness
+
+There is no ground-truth efficiency annotation, so labels come from an
+expert-specified formula (`_heuristic_label`):
+
+```
+e = 1 − min(1.5·backtrack_ratio, 0.50)
+      − min(0.05·idle_loop_count,  0.30)
+      − min(0.10·auth_violations,  0.20)
+```
+
+The model therefore learns to reproduce a rule from sequence context rather
+than to predict human judgement. The score is meaningful *relative* to other
+shifts, not in absolute terms. Real supervisor annotation would be required to
+change that, and is the single most valuable thing that could be added to this
+model.
+
+> **Planned but not wired: DTW labelling against the configured route.**
+> `ai/pipeline/features.py` implements `dtw_distance()`,
+> `build_trajectory_features()` and `trajectory_efficiency_label()`, which
+> would label a shift by how far it deviates from the asset's active
+> `asset_trajectory` — real ground truth rather than an invented notion of
+> efficiency. DTW is the right tool there because a worker who visits the
+> right stops in the right order but lingers longer at one machine should not
+> be penalised; DTW aligns sequences of unequal length and compares route
+> *shape* only.
+>
+> Nothing calls these functions. `train_movement_model()` uses
+> `build_movement_features()` + `_heuristic_label()` as above. Switching the
+> trainer over is the intended next step for this model.
 
 ### Output
 
@@ -75,21 +94,15 @@ model trains on a mixed cohort.
 {
   "efficiency": 0.42,
   "wasted_steps": 7,
-  "route_adherence": 0.50,
-  "suggestion": "Visited 5 cells outside the planned route; waypoint S15 skipped",
   "level": "warning"
 }
 ```
 
-Alert fires when `efficiency < 0.6`.
-
 ### Dataset
 
-- Source: `location_events` joined with `asset_trajectory` and `sensor_config`
+- Source: `location_events`, last 30 days (configurable via `--days`)
 - Sample unit: one (asset, 8-hour shift)
-- Volume at 30 days: ~1,200 shifts
-- Split: chronological 80/20, never shuffled
-- Minimum before activation: 14 days
+- Split: chronological, never shuffled, to prevent leakage across time
 
 ---
 
@@ -98,10 +111,8 @@ Alert fires when `efficiency < 0.6`.
 **Problem.** Route every asset to an exit along the safest path, continuously
 re-planned as conditions change.
 
-**What changed.** The routing graph is built from live configuration —
-`passable=false` cells are excluded entirely, `coverage_type=exit` cells become
-routing targets, machine cells carry a 1.4× traversal multiplier. The danger
-predictor now also consumes model ④'s fire probability.
+The routing graph is built from live configuration: `coverage_type=exit` cells
+become routing targets, and cell danger drives edge cost.
 
 ### Algorithm — two stages
 
@@ -125,13 +136,22 @@ prioritised by the danger of their starting cell.
 
 ### Input
 
-**Stage 1**, per cell, `(14,)`:
+**Stage 1**, per cell, `(12,)`, from a rolling 10-reading window:
 
 `temp_last`, `hum_last`, `smoke_last`, `temp_mean_10`, `temp_std_10`,
 `temp_max_10`, `hum_mean_10`, `smoke_freq_10`, `temp_slope`, `hum_slope`,
-`hour`, `day_of_week`, **`fire_probability`** (from ④), **`neighbour_fire_mean`**
+`hour`, `day_of_week`
 
 **Stage 2:** danger map + asset positions + graph derived from config.
+
+> **Fire coupling is designed but not wired.** `smart_evacuation.py` provides
+> `attach_fire_map()` and `fire_adjusted_danger()` so ④'s per-cell fire
+> probability can raise danger at inference time, and `engine.py` calls
+> `set_fire_map()` on the evacuation model. But `build_danger_dataset()` does
+> not include any fire feature (12 features, listed above), and the engine's
+> `_evac_model` is never constructed, so the call never executes. The
+> ④-before-② training order is therefore correct in intent but currently
+> carries no data dependency.
 
 ### Output
 
@@ -148,12 +168,14 @@ prioritised by the danger of their starting cell.
 
 ### Dataset
 
-| Label source | Priority |
-|---|---|
-| Fire model per-cell probability | 1 (when ④ is trained) |
-| Incident log within ±15 min | 2 |
-| Threshold rules: smoke→0.90, T>60→0.75, T>50→0.40 | 3 |
-| Synthetic fronts: radial, corridor, corner | 4 |
+- Source: `env_readings` over the last 90 days, joined against incident records
+  in `events`; a reading is labelled dangerous when it falls within 15 minutes
+  of a recorded incident at that sensor.
+- Augmented with 200 synthetic fire samples and 500 synthetic normal samples,
+  because real incidents are rare by design — a factory generating enough
+  fires to train on has a larger problem than routing.
+- Threshold rules supply the label where no incident record applies:
+  smoke → 0.90, T > 60 °C → 0.75, T > 50 °C → 0.40.
 
 Success criterion: every asset reaches an exit without crossing a cell of
 danger > 0.8 — the NFPA 101 untenability threshold (smoke layer ≤ 1.8 m,
@@ -168,9 +190,15 @@ so test scenarios are never seen during training.
 
 Three sub-models sharing one feature pipeline.
 
-**What changed.** The normal-operation baseline is conditioned on
-`coverage_type`. A machine cell idling at 31 °C is normal; a corridor at 31 °C
-is not. Per-coverage-type thresholds removed a large class of false positives.
+Normalisation is per sensor, using scalers fitted once over all training data
+and saved alongside the models, so training and inference agree.
+
+> **Not conditioned on coverage type.** A machine cell idling at 31 °C is
+> normal while a corridor at 31 °C is not, so conditioning the normal-operation
+> baseline on `coverage_type` would remove a class of false positives.
+> `ai/training/monitor.py` does not do this — it fits one scaler set across all
+> sensors regardless of coverage. Model ④ *does* use per-coverage-type
+> baselines (channel 0); model ③ does not.
 
 ### 3a — Anomaly Detection (LSTM Autoencoder)
 
@@ -199,20 +227,33 @@ a(x) = (1/T) Σ ‖x_t − x̂_t‖²
 
 ### 3c — Sensor Failure Prediction (XGBoost)
 
+> **Not currently trained.** `train_failure_predictor()` is implemented in
+> `ai/models/system_monitor.py`, but `train_monitor_models()` trains only the
+> autoencoder and the forecaster, and nothing else calls it. No
+> `failure_xgb.joblib` is ever produced, so the inference path that would read
+> it is unreachable. Described here because the design is complete and the
+> wiring is a single missing call.
+
 | | |
 |---|---|
-| Input | `(9,)`: `consecutive_failures`, `temp_std_20`, `hum_std_20`, `smoke_freq_20`, `temp_last`, `hum_last`, `hour`, `day_of_week`, `is_weekend` |
+| Input | `consecutive_failures` (from the watchdog), reading variance over the last 20 readings, time since last reading, temp/humidity/smoke mean and std, `hour`, `day_of_week` |
 | Output | P(sensor goes OFFLINE within 24 h) |
-| Labels | Retrospective — look 24 h forward in `sensor_health_events` |
+| Labels | Retrospective — did this sensor go OFFLINE within 24 h of this reading? |
 | Imbalance | `scale_pos_weight` = negatives/positives |
-| Alert | p > 0.70 · average lead time 6.2 h |
+| Alert | p > 0.70 |
 
 ### Dataset
 
-- Source: `env_readings`, `sensor_health_events`
+- Source: `env_readings` (autoencoder and forecaster); the failure predictor
+  would additionally use `sensor_health_events`
 - Sample unit: (sensor, 30-step window)
-- Volume at 30 days: ~86,000 windows
-- Minimum before activation: 7 days (autoencoder), 14 days (forecaster)
+- The autoencoder trains on **normal-operation windows only**; the forecaster
+  trains on all windows
+- Guards in `train_monitor_models()`: ≥ 50 sequences for the autoencoder,
+  ≥ 100 pairs for the forecaster, otherwise that sub-model is skipped with a
+  warning
+- Scalers are fitted once over all data and saved as `monitor_scalers.joblib`,
+  so training and inference normalise identically
 
 ---
 
@@ -367,16 +408,13 @@ score = 0.40·clip(temp_excess/0.9) + 0.25·clip(4·dT/dt)
 score *= validity_mask
 ```
 
-Verified fallback behaviour:
-
-| Scenario | Result |
-|---|---|
-| Real fire at S15 | ✅ Detected at 40 s, `FIRE_CONFIRMED`, confidence 0.90, origin S15 correct |
-| Machines running at 38 °C | ✅ Correctly silent |
-| Normal operation | ✅ Correctly silent |
-
 Alerts are tagged `source: "rules"` or `source: "convlstm"` so the dashboard
 shows which produced them.
+
+> The rule detector's behaviour on simulated fires, hot machines and normal
+> operation has not been measured by the benchmark harness; no figures are
+> quoted here for that reason. Model ④ as a whole has never been evaluated
+> against a real fire — its positive class is entirely synthetic.
 
 ---
 
@@ -395,38 +433,54 @@ sensor grid (every 2 s)
    fire alert                        routes recomputed every 2 s
 ```
 
-Feeding ④'s output into ② means routing reacts to a *predicted fire front*
-rather than only to sensors already reading critical — assets are steered away
-from cells the fire will reach before it arrives.
+Feeding ④'s output into ② would mean routing reacts to a *predicted fire front*
+rather than only to sensors already reading critical — assets steered away from
+cells the fire will reach before it arrives. This is the intent of the
+`set_fire_map()` call in `engine.py`; see the note under ② for why it does not
+currently execute.
 
 ---
 
 ## Training
 
 ```bash
-python -m ai.training.train_all              # all four
-python -m ai.training.train_all --model fire # fire only
+python -m ai.training.train_all                  # all five
+python -m ai.training.train_all --model fire     # one
+# choices: all | movement | evacuation | monitor | fire | trajectory
+python -m ai.training.train_all --days 60        # widen the extraction window
 ```
 
-Automatic schedule via APScheduler:
+Automatic schedule via APScheduler (`ai/training/trainer.py`):
 
-- **Nightly 02:00** — all four models, fire first
-- **Hourly** — PSI drift check; PSI > 0.20 triggers immediate retraining
-- **Insufficient operational data** — the fire model still trains, since its
-  data is synthetic
+- **Nightly 02:00 UTC** — one batch, in order: ④ fire → ① movement →
+  ⑤ trajectory → ② evacuation → ③ monitor
+- **Hourly at :00** — PSI drift check; PSI > 0.20 triggers a full retrain
+- **Under 7 days of `env_readings`** — only ④ trains, since its data is
+  synthetic; the rest are skipped until enough history exists
 
-After training, `engine.reload_ai_models()` hot-swaps every model into the
-running system without a restart.
+Drift is computed over `env_readings`, comparing the last 7 days against the
+30 before that, per reading type (`temperature`, `humidity`) with 10 bins,
+taking the maximum:
 
-### Minimum data before activation
+```
+PSI = Σᵢ (cᵢ − bᵢ) · ln(cᵢ / bᵢ)
+```
+
+After training, `engine.reload_ai_models()` swaps new artefacts into the
+running system without a restart — but see
+[Implementation status](#implementation-status): it currently reloads only ①
+and ④.
+
+### Minimum data before a model is useful
 
 | Model | Requirement |
 |---|---|
-| ① Movement | 14 days of `location_events` |
-| ② Evacuation | 50 labelled incidents |
-| ③ Monitor (AE) | 7 days of normal operation |
-| ③ Monitor (forecast) | 14 days |
+| ① Movement | 7 days before the batch runs at all; ~14 days before it beats its rule-based fallback |
+| ② Evacuation | 7 days; quality depends on incident records, which are augmented with 700 synthetic samples |
+| ③ Monitor (AE) | ≥ 50 normal-operation sequences |
+| ③ Monitor (forecast) | ≥ 100 window/target pairs |
 | ④ Fire | **none — synthetic** |
+| ⑤ Trajectory & station | ≥ 5 qualifying 8-hour shifts per asset |
 
 ---
 
@@ -461,15 +515,16 @@ movement and proposes both an updated route and an updated station.
 confidence = 0.7 · mean_waypoint_support + 0.3 · sample_size_factor
 ```
 
-### Verified behaviour
+### Worked example
 
-Observed sequence `S03 S03 S03 S03 S04 S09 S09 S09 S09 S09 S09 S10 S15 S15…`
+Observed sequence `S03×4  S04  S09×6  S10  S15×5`, repeated over 6 shifts
+(reproduce with `learn_route` in `ai/training/trajectory.py`):
 
 | | |
 |---|---|
 | Detected stops | `S03, S09, S15` — corridors S04, S10 correctly excluded |
 | Learned route | `S03 → S09 → S15` |
-| Confidence | 0.88 |
+| Confidence | 0.82 |
 | Configured route | `S03 → S21` |
 | Similarity | 0.25 → materially different, update activated |
 
@@ -501,7 +556,7 @@ a station is an area, not half the factory.
 
 Confidence uses the same formula as the route.
 
-#### Verified behaviour
+#### Worked example
 
 Observed sequence `S03×4  S04  S09×6  S10  S15×5`, repeated over 6 shifts:
 
@@ -532,6 +587,142 @@ Both routes and both stations are retained. `asset_trajectory` and
 | `PUT /api/config/workers/{id}/station-active` | Switch station version — revert to the operator's original at any time |
 
 The operator's `configured` v1 is never deleted, for either.
+
+---
+
+## Measured performance
+
+The figures below come from `bench/bench_ai.py`, which trains and evaluates on
+the machine running it and writes raw output to `bench/results_ai.json`.
+Nothing here is estimated. Reproduce with:
+
+```bash
+python -m bench.bench_ai        # ~4 min, CPU only
+```
+
+Two methodological points, both of which are easy to get wrong:
+
+- **Repetition count is chosen so the reported significance is attainable.** A
+  two-sided Wilcoxon signed-rank test over *n* paired runs has a minimum
+  attainable *p* of 2/2ⁿ, so at *n*=5 no result can legitimately be reported at
+  *p* < 0.05. These runs use *n* = 20, floor 1.9 × 10⁻⁶.
+- **Anomaly detection is evaluated before smoke becomes observable.** A fully
+  developed fire is trivially separable and every method scores ≈ 1.0, which
+  measures nothing. Windows are drawn from the simulator's own environmental
+  model, and anomalous windows cover the first 14 s of a fire ramp — below the
+  smoke-latch point, so temperature is rising and no smoke is present.
+
+### ③a Anomaly detection — early (pre-smoke) fire onset, 20 runs
+
+| Method | AUC-ROC | F1 | Precision | Recall |
+|---|---|---|---|---|
+| Threshold rule (deployed fallback) | 0.500 ± 0.000 | 0.000 | 0.000 | 0.000 |
+| One-Class SVM | 0.627 ± 0.025 | 0.286 | 0.374 | 0.232 |
+| Isolation Forest | 0.843 ± 0.018 | 0.313 | 0.398 | 0.258 |
+| **LSTM-AE** | **0.998 ± 0.001** | **0.839** | 0.722 | 0.9996 |
+
+Wilcoxon vs Isolation Forest and vs One-Class SVM: *p* = 1.9 × 10⁻⁶ — the floor
+at *n* = 20, meaning the autoencoder won on every run. Training takes 1.5 s and
+inference 0.95 ms per window on CPU, so nightly retraining and inline
+evaluation need no GPU.
+
+The threshold rule's AUC of exactly 0.500 is not a result to celebrate. It
+fires above 50 °C or on latched smoke, and in the pre-smoke window neither
+condition is reachable, so it sits at chance **by construction**. The honest
+reading is not that the learned model outperforms the rule, but that it
+operates where the rule is silent. They are complementary, and the deployed
+system keeps the rule as the guard for the developed-fire case.
+
+### ② Evacuation routing, 20 runs × 200 scenarios
+
+Danger-weighted Dijkstra against danger-blind shortest-path. The danger
+estimate is derived for radial propagation; corridor and corner patterns are
+unseen and receive a noisier estimate, so those rows test generalisation.
+
+| Fire model | Proposed | Shortest | Mean danger | Reduction | *p* |
+|---|---|---|---|---|---|
+| Radial (fitted) | 0.950 ± 0.015 | 0.888 | 0.205 vs 0.277 | 26 % | 8.8 × 10⁻⁵ |
+| Corridor (unseen) | 0.945 ± 0.014 | 0.869 | 0.110 vs 0.178 | 38 % | 8.8 × 10⁻⁵ |
+| Corner (unseen) | 0.874 ± 0.015 | 0.802 | 0.294 vs 0.370 | 21 % | 8.6 × 10⁻⁵ |
+
+Success is defined as peak route danger staying below 0.8. Gains hold on unseen
+propagation patterns, which indicates they come from the cost formulation
+rather than from overfitting one fire geometry. The corner pattern is hardest
+for both methods: it produces the broadest high-danger region, leaving fewer
+safe routes.
+
+This measures the **routing stage** using the shipped `ZoneGraph` and its
+Dijkstra implementation. It does not measure the trained XGBoost danger
+regressor, which is not loaded at runtime.
+
+### ⑤ Station and route recovery, 20 runs
+
+A known station is configured in the simulator, movement is generated, and
+model ⑤ is asked to recover it. Ground truth is the configuration that produced
+the data.
+
+| Quantity | Mean ± std | 95 % CI |
+|---|---|---|
+| Station cell recall | 1.000 ± 0.000 | [1.000, 1.000] |
+| Station Jaccard | 0.893 ± 0.135 | [0.833, 0.952] |
+| Station confidence | 0.855 ± 0.057 | [0.830, 0.880] |
+| Route Jaccard | 0.615 ± 0.120 | [0.563, 0.667] |
+
+Every configured station cell is recovered in every run; the Jaccard shortfall
+is occasional *extra* cells where the asset paused in transit, not missed ones.
+Mean confidence sits above the 0.60 activation threshold, so these proposals
+would activate in deployment.
+
+**Route recovery is markedly weaker than station recovery, and that asymmetry
+is the empirical case for separating the two.** A route imposes an ordering
+that must be inferred from a noisy visit sequence, and a patrol visits its two
+endpoint waypoints half as often as its interior ones, so the tour is
+systematically harder to reconstruct than the occupancy set. Had the station
+been derived from the learned route, it would have inherited that error.
+
+### Not measured
+
+No figures are reported for model ① or model ④. Credible evaluation of ①
+requires human-annotated efficiency labels; of ④, real incident data. Neither
+exists in a simulator, and simulator-derived scores would measure our own
+assumptions rather than the models.
+
+---
+
+## Implementation status
+
+Training a model and using it are separate paths, and they do not currently
+agree. `engine.reload_ai_models()` constructs only two inference objects, and
+one of those calls raises.
+
+| Model | Trains | Loaded into engine | Effective runtime behaviour |
+|---|---|---|---|
+| ① Movement | Yes | **Yes** | Learned scoring |
+| ② Evacuation | Yes | **No** | Rule-based danger fallback |
+| ③a Anomaly | Yes | **No** | Not evaluated |
+| ③b Forecast | Yes | **No** | Not evaluated |
+| ③c Failure | **No** | **No** | Not evaluated |
+| ④ Fire | Yes | **Yes** | Learned, with rule fallback |
+| ⑤ Station/route | Yes | n/a — writes to PostgreSQL | Live |
+
+Four distinct defects produce that column:
+
+1. **③ never loads.** `reload_ai_models()` calls
+   `SystemMonitorInference(model_path=…)`, but the constructor takes
+   `autoencoder_path` / `forecaster_path` / `failure_model_path`. The resulting
+   `TypeError` is caught by the surrounding `except`, logged at info level as
+   "AI model not available", and the attribute is left `None`.
+2. **③c never trains.** `train_failure_predictor()` has no caller.
+3. **② never loads.** `_evac_model` is initialised to `None` and only ever
+   read, so `danger_xgb.joblib` is retrained nightly and never used.
+4. **① uses heuristic labels.** The DTW labelling in `features.py` is complete
+   but unreferenced.
+
+None of this makes the system unsafe. The rule-based scenarios — smoke, high
+temperature, workers-in-danger — run in the engine independently of the AI
+layer, and every model has a rule fallback tagged in its output. That is
+precisely why these defects degrade rather than break the system, and why they
+went unnoticed.
 
 ---
 

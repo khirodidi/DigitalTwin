@@ -24,7 +24,16 @@ mandatory before the monitoring view appears. To start from a worked example
 instead, seed the database:
 
 ```bash
+# macOS / Linux / WSL / Git Bash
 docker exec -i dt_postgres psql -U dt_user -d digital_twin < scripts/seed_db.sql
+```
+
+```powershell
+# Windows PowerShell — '<' is not an operator in PowerShell, and seed_db.sql
+# contains UTF-8 text that Get-Content mangles on Windows PowerShell 5.1.
+# Copying the file in avoids both problems.
+docker cp scripts\seed_db.sql dt_postgres:/tmp/seed_db.sql
+docker exec dt_postgres psql -U dt_user -d digital_twin -f /tmp/seed_db.sql
 ```
 
 Then feed it data — no hardware needed:
@@ -170,7 +179,11 @@ tell a learned decision from a heuristic one. Drift detection (PSI > 0.20)
 triggers retraining outside the schedule, and models hot-reload without a
 restart.
 
-Full specification: [`docs/AI_MODELS.md`](docs/AI_MODELS.md).
+- [`docs/AI_MODELS_REFERENCE.md`](docs/AI_MODELS_REFERENCE.md) — per model:
+  goal, inputs, outputs, training schedule, dataset, and which models are
+  actually wired into the running engine.
+- [`docs/AI_MODELS.md`](docs/AI_MODELS.md) — algorithm derivations and
+  evaluation results.
 
 ---
 
@@ -308,6 +321,15 @@ docker compose down -v         # DESTROYS data — re-seed afterwards
 
 docker exec dt_postgres pg_dump -U dt_user digital_twin > backup.sql
 docker exec -i dt_postgres psql -U dt_user digital_twin < backup.sql
+```
+
+On Windows PowerShell, restore the same way as seeding — `docker cp` the dump
+in, then `psql -f`:
+
+```powershell
+docker exec dt_postgres pg_dump -U dt_user digital_twin > backup.sql
+docker cp backup.sql dt_postgres:/tmp/backup.sql
+docker exec dt_postgres psql -U dt_user digital_twin -f /tmp/backup.sql
 ```
 
 ---

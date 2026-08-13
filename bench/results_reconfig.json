@@ -1,0 +1,107 @@
+{
+  "meta": {
+    "measured_at": "2026-08-13T20:43:35.632772Z",
+    "note": "Measured by executing the shipped code against a real PostgreSQL instance."
+  },
+  "operations": [
+    {
+      "operation": "Zone threshold",
+      "db_write_ms": 0.5619,
+      "engine_reload_ms": 0.8433,
+      "total_ms": 1.4052,
+      "reload_p95_ms": 1.1017,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Per-sensor threshold",
+      "db_write_ms": 0.5575,
+      "engine_reload_ms": 0.7569,
+      "total_ms": 1.3144,
+      "reload_p95_ms": 0.8968,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Sensor coverage type",
+      "db_write_ms": 0.4769,
+      "engine_reload_ms": 0.7537,
+      "total_ms": 1.2307,
+      "reload_p95_ms": 0.9053,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Zone membership",
+      "db_write_ms": 0.5304,
+      "engine_reload_ms": 0.7858,
+      "total_ms": 1.3162,
+      "reload_p95_ms": 0.8728,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Authorisation",
+      "db_write_ms": 0.5207,
+      "engine_reload_ms": 0.2283,
+      "total_ms": 0.749,
+      "reload_p95_ms": 0.2434,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Asset rename",
+      "db_write_ms": 0.4234,
+      "engine_reload_ms": 0.2342,
+      "total_ms": 0.6577,
+      "reload_p95_ms": 0.2626,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Grid resize",
+      "db_write_ms": 0.4362,
+      "engine_reload_ms": 0.7318,
+      "total_ms": 1.168,
+      "reload_p95_ms": 0.7717,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    },
+    {
+      "operation": "Working station",
+      "db_write_ms": 1.362,
+      "engine_reload_ms": 0.3765,
+      "total_ms": 1.7386,
+      "reload_p95_ms": 0.4875,
+      "runs": 10,
+      "effective_without_restart": true,
+      "requires_rebuild": false,
+      "requires_restart": false
+    }
+  ],
+  "ingest_under_reconfiguration": {
+    "messages_processed": 19877,
+    "reconfigurations": 20,
+    "errors": 0,
+    "baseline_gap_p50_ms": 0.0275,
+    "baseline_gap_p99_ms": 0.0663,
+    "reload_stall_mean_ms": 1.1125,
+    "reload_stall_max_ms": 1.4491,
+    "stall_vs_2s_publish_pct": 0.07246,
+    "note": "Stall is the time the shared event loop spends inside resolver.reload(); ingestion resumes immediately afterwards. No message was dropped."
+  }
+}

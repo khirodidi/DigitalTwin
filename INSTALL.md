@@ -133,6 +133,15 @@ docker exec -i dt_postgres psql -U dt_user -d digital_twin < scripts/seed_db.sql
 open http://localhost:3000
 ```
 
+On **Windows PowerShell** the seed line differs: `<` is not a redirection
+operator there, and `Get-Content` on Windows PowerShell 5.1 would corrupt the
+UTF-8 in `seed_db.sql`. Copy the file into the container instead:
+
+```powershell
+docker cp scripts\seed_db.sql dt_postgres:/tmp/seed_db.sql
+docker exec dt_postgres psql -U dt_user -d digital_twin -f /tmp/seed_db.sql
+```
+
 Click the **⚙️ Configuration** button in the top-right of the header.
 
 ---

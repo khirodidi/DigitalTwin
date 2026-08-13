@@ -17,6 +17,10 @@ open http://localhost:3000             # first run shows the setup screen
 docker compose --profile sim up simulator   # WSN simulator (no hardware needed)
 ```
 
+On Windows PowerShell the seed line must be `docker cp` + `psql -f` instead:
+`<` is not a PowerShell operator, and `seed_db.sql` holds UTF-8 that
+Get-Content mangles on PowerShell 5.1. See README.md.
+
 | Service | Port | Container |
 |---|---|---|
 | Frontend (React + nginx) | 3000 | `dt_frontend` |
