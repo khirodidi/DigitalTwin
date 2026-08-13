@@ -179,7 +179,11 @@ tell a learned decision from a heuristic one. Drift detection (PSI > 0.20)
 triggers retraining outside the schedule, and models hot-reload without a
 restart.
 
-Full specification: [`docs/AI_MODELS.md`](docs/AI_MODELS.md).
+- [`docs/AI_MODELS_REFERENCE.md`](docs/AI_MODELS_REFERENCE.md) — per model:
+  goal, inputs, outputs, training schedule, dataset, and which models are
+  actually wired into the running engine.
+- [`docs/AI_MODELS.md`](docs/AI_MODELS.md) — algorithm derivations and
+  evaluation results.
 
 ---
 
